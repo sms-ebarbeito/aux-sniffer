@@ -1,32 +1,33 @@
-// Configuración del sniffer: placa, pines, modo de backlight y RMT.
-// Es el ÚNICO lugar a tocar para adaptar el firmware. La placa se elige sola
-// según el FQBN con el que se compila; cualquier valor se puede pisar con -D
-// (por ejemplo EXTRA="-DPIN_AUX_IN=6" ./build.sh, que usa
+// Sniffer configuration: board, pins, backlight mode and RMT.
+// This is the ONLY place to touch to adapt the firmware. The board is picked
+// automatically from the FQBN it's built for; any value can be overridden
+// with -D (for example EXTRA="-DPIN_AUX_IN=6" ./build.sh, which uses
 // --build-property "compiler.cpp.extra_flags=...").
 #pragma once
 
 #include "sdkconfig.h"
 
 // ---------------------------------------------------------------- backlight
-// BL_MODE_DIRECT_OD (default, el montado): pista de BL_EN cortada, el GPIO va
-//   directo a BL_EN del lado panel, con pull-up externa de 10 kΩ al 3,3 V del
-//   adaptador. Open-drain sin pulls internos: LOW = backlight OFF; soltar el
-//   pin (alta impedancia) = ON, lo sube la pull-up externa. Es externa para
-//   que BL_EN quede en alto aunque el ESP32 esté en reset o sin firmware.
-//   El ESP32 tiene que alimentarse del mismo 3,3 V del adaptador.
-// BL_MODE_MOSFET (SPEC §2): GPIO -> 100 Ω -> gate 2N7002 (100 kΩ a GND).
+// BL_MODE_DIRECT_OD (default, the one installed): BL_EN trace cut, the GPIO
+//   goes straight to BL_EN on the panel side, with an external 10 kΩ pull-up
+//   to the adapter's 3.3 V. Open-drain with no internal pulls: LOW = backlight
+//   OFF; releasing the pin (high impedance) = ON, the external pull-up raises
+//   it. It's external so BL_EN stays high even while the ESP32 is in reset or
+//   has no firmware running. The ESP32 must be powered from the adapter's
+//   same 3.3 V.
+// BL_MODE_MOSFET (SPEC §2): GPIO -> 100 Ω -> 2N7002 gate (100 kΩ to GND).
 //   HIGH = backlight OFF, LOW = ON.
-// En ambos modos el estado de arranque, reset o error es backlight ON.
+// In both modes the boot, reset or error state is backlight ON.
 #define BL_MODE_MOSFET 1
 #define BL_MODE_DIRECT_OD 2
 #ifndef BL_MODE
 #define BL_MODE BL_MODE_DIRECT_OD
 #endif
 
-// ---------------------------------------------------------------- placa
+// ---------------------------------------------------------------- board
 #if CONFIG_IDF_TARGET_ESP32C3
-// ESP32-C3 SuperMini (placa principal). Evitar 2, 8, 9 (strapping) y 18/19
-// (USB nativo: por ahí sale el Serial con CDC On Boot).
+// ESP32-C3 SuperMini (main board). Avoid 2, 8, 9 (strapping) and 18/19
+// (native USB: Serial goes out there with CDC On Boot).
 #define BOARD_NAME "ESP32-C3 SuperMini"
 #ifndef PIN_AUX_IN
 #define PIN_AUX_IN 4
@@ -35,14 +36,14 @@
 #define PIN_BL 5
 #endif
 #ifndef PIN_LED
-#define PIN_LED 8  // LED azul; strapping, solo se usa como salida tras el arranque
+#define PIN_LED 8  // blue LED; strapping pin, only used as an output after boot
 #endif
 #ifndef LED_ACTIVE_LOW
 #define LED_ACTIVE_LOW 1
 #endif
-// Memoria RMT del canal RX: los 2 bloques RX de 48 símbolos (el del canal y
-// el del otro canal RX). El driver los usa como ping-pong y va copiando al
-// buffer de usuario, así que la ráfaga puede ser más larga que esto.
+// RMT memory for the RX channel: both 48-symbol RX blocks (the channel's own
+// and the other RX channel's). The driver uses them as ping-pong and keeps
+// copying into the user buffer, so a burst can be longer than this.
 #ifndef RMT_MEM_SYMBOLS
 #define RMT_MEM_SYMBOLS 96
 #endif
@@ -56,13 +57,13 @@
 #define PIN_BL 5
 #endif
 #ifndef PIN_LED
-#define PIN_LED -1  // el LED de las DevKit S3 es RGB (WS2812): no se usa
+#define PIN_LED -1  // the S3 DevKit LED is RGB (WS2812): not used
 #endif
 #ifndef LED_ACTIVE_LOW
 #define LED_ACTIVE_LOW 0
 #endif
 #ifndef RMT_MEM_SYMBOLS
-#define RMT_MEM_SYMBOLS 96  // 2 bloques de 48, ping-pong como en la C3
+#define RMT_MEM_SYMBOLS 96  // 2 blocks of 48, ping-pong as on the C3
 #endif
 
 #elif CONFIG_IDF_TARGET_ESP32
@@ -74,42 +75,42 @@
 #define PIN_BL 25
 #endif
 #ifndef PIN_LED
-#define PIN_LED 2  // LED de muchas DevKit; strapping, solo salida tras el arranque
+#define PIN_LED 2  // LED on many DevKits; strapping pin, output only after boot
 #endif
 #ifndef LED_ACTIVE_LOW
 #define LED_ACTIVE_LOW 0
 #endif
-// El ESP32 clásico no tiene ping-pong en RX: la ráfaga entera tiene que
-// entrar en la memoria del canal. 4 bloques de 64 = 256 símbolos.
+// The classic ESP32 has no RX ping-pong: the whole burst has to fit in the
+// channel memory. 4 blocks of 64 = 256 symbols.
 #ifndef RMT_MEM_SYMBOLS
 #define RMT_MEM_SYMBOLS 256
 #endif
 
 #else
-#error "Placa no soportada: agregar sus pines en config.h"
+#error "Unsupported board: add its pins in config.h"
 #endif
 
 // ---------------------------------------------------------------- RMT
-#define RMT_RESOLUTION_HZ 10000000  // 100 ns por tick
-#define RMT_MIN_NS 150              // pulsos más cortos = glitch
-#define RMT_MAX_NS 10000            // 10 µs sin flancos = fin de ráfaga
-// Buffer de usuario por ráfaga. Escritura + ACK ≈ 100 símbolos; la ráfaga más
-// larga posible de AUX (16 bytes de datos) ronda los 210.
+#define RMT_RESOLUTION_HZ 10000000  // 100 ns per tick
+#define RMT_MIN_NS 150              // shorter pulses = glitch
+#define RMT_MAX_NS 10000            // 10 µs without edges = end of burst
+// User buffer per burst. Write + ACK ≈ 100 symbols; the longest possible AUX
+// burst (16 data bytes) is around 210.
 #define RX_BUF_SYMBOLS 512
-#define NUM_RX_BUFS 4  // anillo de buffers entre el callback y la tarea
+#define NUM_RX_BUFS 4  // ring of buffers between the callback and the task
 
-// ---------------------------------------------------------------- varios
+// ---------------------------------------------------------------- misc
 #ifndef AUX_DEBUG
-#define AUX_DEBUG 1  // imprimir cada mensaje por Serial (se alterna con 'd')
+#define AUX_DEBUG 1  // print every message to Serial (toggled with 'd')
 #endif
 #define SERIAL_BAUD 115200
 #define WDT_TIMEOUT_MS 5000
 
-// ---------------------------------------------------------------- chequeos
+// ---------------------------------------------------------------- checks
 #if CONFIG_IDF_TARGET_ESP32C3
 #define C3_FORBIDDEN(p) ((p) == 2 || (p) == 8 || (p) == 9 || (p) == 18 || (p) == 19)
-static_assert(!C3_FORBIDDEN(PIN_AUX_IN), "PIN_AUX_IN: GPIO de strapping o USB en la C3");
-static_assert(!C3_FORBIDDEN(PIN_BL), "PIN_BL: GPIO de strapping o USB en la C3");
+static_assert(!C3_FORBIDDEN(PIN_AUX_IN), "PIN_AUX_IN: strapping or USB GPIO on the C3");
+static_assert(!C3_FORBIDDEN(PIN_BL), "PIN_BL: strapping or USB GPIO on the C3");
 #endif
-static_assert(PIN_AUX_IN != PIN_BL, "PIN_AUX_IN y PIN_BL tienen que ser distintos");
-static_assert(BL_MODE == BL_MODE_MOSFET || BL_MODE == BL_MODE_DIRECT_OD, "BL_MODE inválido");
+static_assert(PIN_AUX_IN != PIN_BL, "PIN_AUX_IN and PIN_BL must be different");
+static_assert(BL_MODE == BL_MODE_MOSFET || BL_MODE == BL_MODE_DIRECT_OD, "invalid BL_MODE");

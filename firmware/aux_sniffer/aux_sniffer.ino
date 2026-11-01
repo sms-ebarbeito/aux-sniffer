@@ -1,13 +1,13 @@
-// Sniffer pasivo de DisplayPort AUX -> control de backlight (ver SPEC.md).
+// Passive DisplayPort AUX sniffer -> backlight control (see SPEC.md).
 //
-// Flujo:
-//   RMT RX (PIN_AUX_IN) --ráfaga--> onRecvDone (ISR): rearma el RMT con el
-//   siguiente buffer del anillo y encola la ráfaga
-//   --> decodeTask (prioridad alta): símbolos -> corridas -> auxdec -> acción
-//       sobre PIN_BL y LED; si hay depuración, encola texto para loop()
-//   --> loop() (prioridad baja): imprime por Serial. Nunca bloquea la acción.
+// Flow:
+//   RMT RX (PIN_AUX_IN) --burst--> onRecvDone (ISR): re-arms the RMT with the
+//   next buffer of the ring and queues the burst
+//   --> decodeTask (high priority): symbols -> runs -> auxdec -> action on
+//       PIN_BL and the LED; in debug mode, queues text for loop()
+//   --> loop() (low priority): prints to Serial. Never delays the action.
 //
-// Configuración (placa, pines, modo de backlight): config.h.
+// Configuration (board, pins, backlight mode): config.h.
 
 #include <Arduino.h>
 
@@ -23,14 +23,14 @@
 #include "auxdec.h"
 #include "config.h"
 
-static_assert(sizeof(rmt_symbol_word_t) == sizeof(uint32_t), "auxdec::runsFromRmt espera símbolos de 32 bits");
+static_assert(sizeof(rmt_symbol_word_t) == sizeof(uint32_t), "auxdec::runsFromRmt expects 32-bit symbols");
 
 // ---------------------------------------------------------------- backlight
 
 static volatile bool g_blOff = false;
 
-// Escribe el estado del backlight. En DIRECT_OD, el 1 deja el pin en alta
-// impedancia (la pull-up externa de 10 kΩ sube BL_EN); el 0 lo baja.
+// Writes the backlight state. In DIRECT_OD, 1 leaves the pin in high
+// impedance (the external 10 kΩ pull-up raises BL_EN); 0 pulls it low.
 static void blWrite(bool off) {
 #if BL_MODE == BL_MODE_DIRECT_OD
   gpio_set_level((gpio_num_t)PIN_BL, off ? 0 : 1);
@@ -39,14 +39,14 @@ static void blWrite(bool off) {
 #endif
 }
 
-// Backlight ON sin glitch: primero el nivel de salida, después la dirección.
-// Sin pulls internos en ninguno de los dos modos.
+// Backlight ON without a glitch: output level first, then direction.
+// No internal pulls in either mode.
 static void blInit() {
   blWrite(false);
   gpio_config_t io = {};
   io.pin_bit_mask = 1ULL << PIN_BL;
 #if BL_MODE == BL_MODE_DIRECT_OD
-  io.mode = GPIO_MODE_INPUT_OUTPUT_OD;  // con entrada: permite leer el nivel real de BL_EN
+  io.mode = GPIO_MODE_INPUT_OUTPUT_OD;  // input enabled: lets us read the actual BL_EN level
 #else
   io.mode = GPIO_MODE_OUTPUT;
 #endif
@@ -57,7 +57,7 @@ static void blInit() {
   blWrite(false);
 }
 
-// Ante un esp_restart() (no en un panic: ahí el reset del chip ya suelta el pin).
+// On esp_restart() (not on a panic: there the chip reset already releases the pin).
 static void blShutdown() { blWrite(false); }
 
 static void ledWrite(bool on) {
@@ -68,10 +68,10 @@ static void ledWrite(bool on) {
 #endif
 }
 
-// Lo antes posible: initVariant() corre antes que setup() y que el Serial.
+// As early as possible: initVariant() runs before setup() and before Serial.
 void initVariant() { blInit(); }
 
-// ---------------------------------------------------------------- estado
+// ---------------------------------------------------------------- state
 
 struct Burst {
   const rmt_symbol_word_t* sym;
@@ -81,8 +81,8 @@ struct Burst {
 
 struct LogItem {
   enum Kind : uint8_t { Msg, Undecodable, State } kind;
-  uint8_t index;  // posición del mensaje en la ráfaga (0 = pedido)
-  bool blOff;     // State: nuevo estado
+  uint8_t index;  // position of the message in the burst (0 = request)
+  bool blOff;     // State: new state
   uint16_t nruns;
   int64_t t_us;
   auxdec::Message msg;
@@ -93,13 +93,13 @@ static struct {
   volatile uint32_t dropped, logDropped, rearmFail;
 } g_stats;
 
-// Cada contador tiene un solo escritor (la ISR o la tarea); loop() solo lee.
+// Each counter has a single writer (the ISR or the task); loop() only reads.
 static inline void IRAM_ATTR bump(volatile uint32_t& c) { c = c + 1; }
 
 static rmt_symbol_word_t g_rxBuf[NUM_RX_BUFS][RX_BUF_SYMBOLS];
 static rmt_channel_handle_t g_rx = nullptr;
 static rmt_receive_config_t g_rxCfg = {};
-static volatile uint8_t g_rxIdx = 0;  // buffer que está recibiendo
+static volatile uint8_t g_rxIdx = 0;  // buffer currently receiving
 static volatile bool g_rxStopped = false;
 static bool g_rxOk = false;
 static QueueHandle_t g_burstQ, g_logQ;
@@ -107,10 +107,10 @@ static volatile bool g_debug = AUX_DEBUG;
 
 // ---------------------------------------------------------------- RMT
 
-// ISR. El anillo tiene NUM_RX_BUFS buffers y la cola NUM_RX_BUFS - 2 lugares:
-// en uso hay a lo sumo los encolados + el que procesa la tarea + el que
-// recibe, así que el siguiente del anillo siempre está libre. Si la cola está
-// llena, la ráfaga se descarta y se reusa el mismo buffer.
+// ISR. The ring has NUM_RX_BUFS buffers and the queue NUM_RX_BUFS - 2 slots:
+// at most the queued ones + the one the task is processing + the one
+// receiving are in use, so the next one in the ring is always free. If the
+// queue is full, the burst is dropped and the same buffer is reused.
 static bool IRAM_ATTR onRecvDone(rmt_channel_handle_t ch, const rmt_rx_done_event_data_t* ed, void*) {
   BaseType_t woken = pdFALSE;
   Burst b = {ed->received_symbols, (uint16_t)ed->num_symbols, esp_timer_get_time()};
@@ -141,7 +141,7 @@ static esp_err_t rxInit() {
   return rmt_receive(g_rx, g_rxBuf[0], sizeof(g_rxBuf[0]), &g_rxCfg);
 }
 
-// ---------------------------------------------------------------- decodificación
+// ---------------------------------------------------------------- decoding
 
 static void logPush(const LogItem& it) {
   if (xQueueSend(g_logQ, &it, 0) != pdTRUE) bump(g_stats.logDropped);
@@ -171,7 +171,7 @@ static void handleBurst(const Burst& b) {
     bump(g_stats.noise);
     return;
   }
-  if (runs[nr - 1].dur_ns != 0) bump(g_stats.truncated);  // sin marca de fin: buffer lleno
+  if (runs[nr - 1].dur_ns != 0) bump(g_stats.truncated);  // no end marker: buffer full
 
   size_t nm = dec.decode(runs, nr, msgs, auxdec::kMaxMsgs);
   if (nm == 0) {
@@ -187,7 +187,7 @@ static void handleBurst(const Burst& b) {
   }
   for (size_t i = 0; i < nm; i++) {
     bump(g_stats.messages);
-    if (g_debug) {  // antes que la acción, para que el log salga en orden (logPush no bloquea)
+    if (g_debug) {  // before the action, so the log comes out in order (logPush doesn't block)
       LogItem it = {};
       it.kind = LogItem::Msg;
       it.index = (uint8_t)i;
@@ -206,8 +206,8 @@ static void decodeTask(void*) {
   for (;;) {
     Burst b;
     if (xQueueReceive(g_burstQ, &b, pdMS_TO_TICKS(1000)) == pdTRUE) handleBurst(b);
-    // Si el rearmado en la ISR falló, el canal quedó parado y la ISR no vuelve
-    // a correr: no hay carrera. g_rxIdx está libre por el invariante del anillo.
+    // If re-arming in the ISR failed, the channel is stopped and the ISR won't
+    // run again: no race. g_rxIdx is free by the ring invariant.
     if (g_rxOk && g_rxStopped) {
       g_rxStopped = false;
       bump(g_stats.rearmFail);
@@ -231,7 +231,7 @@ static void printItem(const LogItem& it) {
       Serial.printf(">>> BACKLIGHT %s\n", it.blOff ? "OFF" : "ON");
       break;
     case LogItem::Undecodable:
-      Serial.printf("?? ráfaga sin SYNC (%u corridas)\n", it.nruns);
+      Serial.printf("?? burst without SYNC (%u runs)\n", it.nruns);
       break;
     case LogItem::Msg:
       if (it.index == 0)
@@ -244,8 +244,8 @@ static void printItem(const LogItem& it) {
 
 static void printStats() {
   Serial.printf(
-      "stats: ráfagas=%lu ruido=%lu sin_sync=%lu truncadas=%lu mensajes=%lu descartadas=%lu "
-      "log_perdido=%lu rearmados=%lu | backlight=%s rmt=%s\n",
+      "stats: bursts=%lu noise=%lu no_sync=%lu truncated=%lu messages=%lu dropped=%lu "
+      "log_lost=%lu rearms=%lu | backlight=%s rmt=%s\n",
       (unsigned long)g_stats.bursts, (unsigned long)g_stats.noise, (unsigned long)g_stats.undecodable,
       (unsigned long)g_stats.truncated, (unsigned long)g_stats.messages, (unsigned long)g_stats.dropped,
       (unsigned long)g_stats.logDropped, (unsigned long)g_stats.rearmFail, g_blOff ? "OFF" : "ON",
@@ -254,21 +254,21 @@ static void printStats() {
 
 static void printBanner() {
   Serial.printf("\naux-sniffer | %s | AUX_IN=GPIO%d BL=GPIO%d (%s) LED=GPIO%d\n", BOARD_NAME, PIN_AUX_IN, PIN_BL,
-                BL_MODE == BL_MODE_DIRECT_OD ? "directo open-drain, LOW=OFF" : "MOSFET, HIGH=OFF", PIN_LED);
-  Serial.printf("RMT %lu Hz, mem %d símbolos, buffer %d x %d, filtro %d ns, fin de ráfaga %d ns\n",
+                BL_MODE == BL_MODE_DIRECT_OD ? "direct open-drain, LOW=OFF" : "MOSFET, HIGH=OFF", PIN_LED);
+  Serial.printf("RMT %lu Hz, mem %d symbols, buffer %d x %d, filter %d ns, end of burst %d ns\n",
                 (unsigned long)RMT_RESOLUTION_HZ, RMT_MEM_SYMBOLS, NUM_RX_BUFS, RX_BUF_SYMBOLS, RMT_MIN_NS,
                 RMT_MAX_NS);
-  Serial.printf("debug=%s  (teclas: d=debug on/off, s=stats, h=ayuda)\n", g_debug ? "on" : "off");
+  Serial.printf("debug=%s  (keys: d=debug on/off, s=stats, h=help)\n", g_debug ? "on" : "off");
 }
 
 // ---------------------------------------------------------------- setup / loop
 
 void setup() {
-  blInit();  // ya lo hizo initVariant(); repetirlo es inocuo
+  blInit();  // initVariant() already did it; repeating it is harmless
   esp_register_shutdown_handler(blShutdown);
 #if PIN_LED >= 0
   pinMode(PIN_LED, OUTPUT);
-  for (int i = 0; i < 3; i++) {  // señal de vida
+  for (int i = 0; i < 3; i++) {  // sign of life
     ledWrite(true);
     delay(60);
     ledWrite(false);
@@ -292,9 +292,9 @@ void setup() {
 
   esp_err_t err = rxInit();
   g_rxOk = err == ESP_OK;
-  delay(500);  // dar tiempo a que el host abra el puerto USB CDC
+  delay(500);  // give the host time to open the USB CDC port
   printBanner();
-  if (!g_rxOk) Serial.printf("ERROR iniciando RMT: %s. El backlight queda encendido.\n", esp_err_to_name(err));
+  if (!g_rxOk) Serial.printf("ERROR starting RMT: %s. The backlight stays on.\n", esp_err_to_name(err));
 }
 
 void loop() {
@@ -328,7 +328,7 @@ void loop() {
   }
   if (!g_rxOk && now - lastErr > 5000) {
     lastErr = now;
-    Serial.println("ERROR: RMT sin iniciar, sniffer inactivo (backlight encendido)");
+    Serial.println("ERROR: RMT not started, sniffer inactive (backlight on)");
   }
   esp_task_wdt_reset();
 }

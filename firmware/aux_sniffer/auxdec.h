@@ -1,7 +1,7 @@
-// Decodificador DisplayPort AUX (Manchester-II, 1 Mbps) a partir de corridas
-// (nivel, duración). Sin dependencias de Arduino ni de ESP-IDF: compila igual
-// en el ESP32 y en el host (test/). Port de auxdec.py, extendido para extraer
-// varios mensajes por ráfaga (pedido + respuesta).
+// DisplayPort AUX decoder (Manchester-II, 1 Mbps) working on runs of
+// (level, duration). No Arduino or ESP-IDF dependencies: it builds the same
+// on the ESP32 and on the host (test/). Port of auxdec.py, extended to
+// extract several messages per burst (request + reply).
 #pragma once
 
 #include <stddef.h>
@@ -9,52 +9,51 @@
 
 namespace auxdec {
 
-// AUX: 4 bytes de cabecera + hasta 16 de datos.
+// AUX: 4 header bytes + up to 16 data bytes.
 constexpr size_t kMaxMsgBytes = 20;
-// Medios bits que se expanden por ráfaga. Si se llena, el resto se descarta
-// (equivale a una ráfaga truncada).
+// Half-bits expanded per burst. If it fills up, the rest is dropped
+// (equivalent to a truncated burst).
 constexpr size_t kMaxHalfbits = 4096;
-// Ráfagas con menos corridas que esto se descartan como ruido (SPEC §3).
+// Bursts with fewer runs than this are dropped as noise (SPEC §3).
 constexpr size_t kMinRuns = 20;
-// Mensajes por ráfaga como máximo (normalmente 2: pedido y respuesta).
+// Maximum messages per burst (normally 2: request and reply).
 constexpr size_t kMaxMsgs = 8;
-// Medios bits que se asignan a la última corrida cuando su duración es
-// desconocida (dur_ns == 0: el nivel quedó quieto hasta el fin de ráfaga).
+// Half-bits assigned to the last run when its duration is unknown
+// (dur_ns == 0: the level stayed put until the end of the burst).
 constexpr uint8_t kFinalRunUnits = 4;
 
 struct Run {
-  uint8_t level;    // 0 o 1
-  uint32_t dur_ns;  // 0 = corrida final de duración desconocida
+  uint8_t level;    // 0 or 1
+  uint32_t dur_ns;  // 0 = final run of unknown duration
 };
 
 struct Message {
   uint8_t bytes[kMaxMsgBytes];
   uint8_t nbytes;
-  uint16_t nbits;  // bits leídos; si no es múltiplo de 8 sobran nbits % 8
-  bool stopped;    // true si terminó en STOP; false si la ráfaga se cortó antes
-  bool inverted;   // polaridad invertida (A/B cruzados)
+  uint16_t nbits;  // bits read; if not a multiple of 8, nbits % 8 are left over
+  bool stopped;    // true if it ended in a STOP; false if the burst was cut before
+  bool inverted;   // inverted polarity (A/B swapped)
 };
 
 enum class Action : uint8_t { None, BacklightOn, BacklightOff };
 
-// Duración -> medios bits, round-half-even como round() de Python, acotado a
-// 8. Devuelve 0 para pulsos < 250 ns (glitch: la corrida se descarta).
+// Duration -> half-bits, round-half-even like Python's round(), capped at 8.
+// Returns 0 for pulses < 250 ns (glitch: the run is dropped).
 uint8_t quantize(uint32_t dur_ns);
 
-// Convierte símbolos RMT (rmt_symbol_word_t::val) a corridas. Formato de cada
-// palabra: duration0 bits 0-14, level0 bit 15, duration1 bits 16-30, level1
-// bit 31. Una duración 0 es la marca de fin de ráfaga del RMT: esa corrida se
-// emite con dur_ns = 0 y se termina. Si no aparece (buffer truncado), todas
-// las corridas tienen duración real. Devuelve la cantidad de corridas.
+// Converts RMT symbols (rmt_symbol_word_t::val) to runs. Word layout:
+// duration0 bits 0-14, level0 bit 15, duration1 bits 16-30, level1 bit 31. A
+// duration of 0 is the RMT end-of-burst marker: that run is emitted with
+// dur_ns = 0 and conversion stops. If it's missing (truncated buffer), every
+// run has a real duration. Returns the number of runs.
 size_t runsFromRmt(const uint32_t* words, size_t nwords, uint32_t tick_ns,
                    Run* out, size_t max_runs);
 
 class Decoder {
  public:
-  // Decodifica todos los mensajes de una ráfaga. Prueba las dos polaridades
-  // y se queda con la que da más mensajes de bytes completos (empate: la
-  // normal). Devuelve la cantidad de mensajes escritos en out (como máximo
-  // kMaxMsgs).
+  // Decodes every message in a burst. Tries both polarities and keeps the
+  // one that yields more whole-byte messages (tie: normal polarity). Returns
+  // the number of messages written to out (at most kMaxMsgs).
   size_t decode(const Run* runs, size_t nruns, Message* out, size_t max_msgs);
 
  private:
@@ -67,11 +66,11 @@ class Decoder {
   size_t nhb_ = 0;
 };
 
-// Acción para un mensaje: solo "80 06 00 00 XX" de exactamente 40 bits.
-// XX=01 -> ON, XX=02/05 -> OFF, cualquier otra cosa -> None.
+// Action for a message: only "80 06 00 00 XX" of exactly 40 bits.
+// XX=01 -> ON, XX=02/05 -> OFF, anything else -> None.
 Action classify(const Message& m);
 
-// Texto legible para depuración (al estilo de auxdec.py). Devuelve buf.
+// Human-readable text for debugging (in the style of auxdec.py). Returns buf.
 const char* describeRequest(const Message& m, char* buf, size_t len);
 const char* describeReply(const Message& m, char* buf, size_t len);
 

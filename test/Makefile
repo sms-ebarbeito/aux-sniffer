@@ -1,4 +1,4 @@
-# Test de host del decodificador (Mac, clang). Uso: make -C test
+# Host test for the decoder (Mac, clang). Usage: make -C test
 CXX = clang++
 CXXFLAGS = -std=c++17 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined
 FW = ../firmware/aux_sniffer

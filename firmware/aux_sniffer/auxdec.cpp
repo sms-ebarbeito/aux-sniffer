@@ -8,7 +8,7 @@ namespace auxdec {
 
 namespace {
 
-constexpr size_t kPreambleMin = 8;  // medios bits mínimos antes del SYNC
+constexpr size_t kPreambleMin = 8;  // minimum half-bits before the SYNC
 constexpr uint8_t kSync[8] = {1, 1, 1, 1, 0, 0, 0, 0};
 
 int good(const Message* m, size_t n) {
@@ -18,7 +18,7 @@ int good(const Message* m, size_t n) {
   return score;
 }
 
-// snprintf acumulativo que nunca se pasa del buffer.
+// Cumulative snprintf that never overruns the buffer.
 void append(char* buf, size_t len, size_t* pos, const char* fmt, ...)
     __attribute__((format(printf, 4, 5)));
 
@@ -39,7 +39,7 @@ void appendData(char* buf, size_t len, size_t* pos, const uint8_t* d, size_t n) 
 
 void appendTail(char* buf, size_t len, size_t* pos, const Message& m) {
   if (m.nbits % 8) append(buf, len, pos, "  [%u bits]", (unsigned)m.nbits);
-  if (!m.stopped) append(buf, len, pos, "  [truncado]");
+  if (!m.stopped) append(buf, len, pos, "  [truncated]");
 }
 
 }  // namespace
@@ -86,9 +86,9 @@ size_t Decoder::extract(bool inverted, Message* out, size_t max_msgs) const {
   const uint8_t flip = inverted ? 1 : 0;
   size_t nmsg = 0, start = 0;
   while (nmsg < max_msgs) {
-    // SYNC = 1111 0000 con al menos kPreambleMin medios bits antes, contados
-    // desde el inicio de la ráfaga o desde el STOP del mensaje anterior (así
-    // el propio STOP, que tiene el mismo patrón, no cuenta como SYNC).
+    // SYNC = 1111 0000 with at least kPreambleMin half-bits before it,
+    // counted from the start of the burst or from the previous message's
+    // STOP (so the STOP itself, which has the same pattern, doesn't count).
     size_t i = start + kPreambleMin;
     while (i + 8 <= nhb_ && !syncAt(i, flip)) i++;
     if (i + 8 > nhb_) break;
@@ -178,7 +178,7 @@ const char* describeReply(const Message& m, char* buf, size_t len) {
   size_t pos = 0;
   buf[0] = '\0';
   if (m.nbytes == 0) {
-    append(buf, len, &pos, "REPLY (vacía)");
+    append(buf, len, &pos, "REPLY (empty)");
     appendTail(buf, len, &pos, m);
     return buf;
   }

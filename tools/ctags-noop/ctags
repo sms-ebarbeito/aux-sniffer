@@ -1,5 +1,5 @@
 #!/bin/sh
-# ctags vacío para arduino-cli en Macs Apple Silicon sin Rosetta (el ctags que
-# trae arduino-cli es x86_64). Solo sirve porque aux_sniffer.ino declara todo
-# antes de usarlo y no necesita los prototipos que genera ctags.
+# No-op ctags for arduino-cli on Apple Silicon Macs without Rosetta (the ctags
+# bundled with arduino-cli is x86_64). It only works because aux_sniffer.ino
+# declares everything before use and doesn't need the prototypes ctags generates.
 exit 0
