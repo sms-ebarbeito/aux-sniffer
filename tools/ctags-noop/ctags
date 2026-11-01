@@ -1,0 +1,5 @@
+#!/bin/sh
+# ctags vacío para arduino-cli en Macs Apple Silicon sin Rosetta (el ctags que
+# trae arduino-cli es x86_64). Solo sirve porque aux_sniffer.ino declara todo
+# antes de usarlo y no necesita los prototipos que genera ctags.
+exit 0
