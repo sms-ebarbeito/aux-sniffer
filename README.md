@@ -242,3 +242,7 @@ vuelve al despertar.
 - **WROOM y S3.** Compilan, pero no se probaron. En la WROOM, que no tiene
   ping-pong, las ráfagas de más de 256 símbolos (lecturas de EDID) deberían
   truncarse sin afectar a la `0x600`.
+
+## Licencia
+
+[MIT](LICENSE). Copyright (c) 2026 Enrique Barbeito.
