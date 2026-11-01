@@ -187,9 +187,7 @@ static void handleBurst(const Burst& b) {
   }
   for (size_t i = 0; i < nm; i++) {
     bump(g_stats.messages);
-    auxdec::Action a = auxdec::classify(msgs[i]);
-    if (a != auxdec::Action::None) setBacklight(a == auxdec::Action::BacklightOff, b.t_us);
-    if (g_debug) {
+    if (g_debug) {  // antes que la acción, para que el log salga en orden (logPush no bloquea)
       LogItem it = {};
       it.kind = LogItem::Msg;
       it.index = (uint8_t)i;
@@ -198,6 +196,8 @@ static void handleBurst(const Burst& b) {
       it.msg = msgs[i];
       logPush(it);
     }
+    auxdec::Action a = auxdec::classify(msgs[i]);
+    if (a != auxdec::Action::None) setBacklight(a == auxdec::Action::BacklightOff, b.t_us);
   }
 }
 
