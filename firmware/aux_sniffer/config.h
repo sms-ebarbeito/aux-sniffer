@@ -8,9 +8,11 @@
 #include "sdkconfig.h"
 
 // ---------------------------------------------------------------- backlight
-// BL_MODE_DIRECT_OD (default): el GPIO va directo al pad lado-conector de la
-//   R de 1 kΩ que sube BL_EN a 3,3 V. Open-drain sin pulls: LOW = backlight
-//   OFF; soltar el pin (alta impedancia) = ON, lo sube el 1 kΩ de la placa.
+// BL_MODE_DIRECT_OD (default, el montado): pista de BL_EN cortada, el GPIO va
+//   directo a BL_EN del lado panel, con pull-up externa de 10 kΩ al 3,3 V del
+//   adaptador. Open-drain sin pulls internos: LOW = backlight OFF; soltar el
+//   pin (alta impedancia) = ON, lo sube la pull-up externa. Es externa para
+//   que BL_EN quede en alto aunque el ESP32 esté en reset o sin firmware.
 //   El ESP32 tiene que alimentarse del mismo 3,3 V del adaptador.
 // BL_MODE_MOSFET (SPEC §2): GPIO -> 100 Ω -> gate 2N7002 (100 kΩ a GND).
 //   HIGH = backlight OFF, LOW = ON.

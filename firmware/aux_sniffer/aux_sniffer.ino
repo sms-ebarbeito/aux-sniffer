@@ -30,7 +30,7 @@ static_assert(sizeof(rmt_symbol_word_t) == sizeof(uint32_t), "auxdec::runsFromRm
 static volatile bool g_blOff = false;
 
 // Escribe el estado del backlight. En DIRECT_OD, el 1 deja el pin en alta
-// impedancia (el 1 kΩ de la placa sube BL_EN); el 0 lo baja.
+// impedancia (la pull-up externa de 10 kΩ sube BL_EN); el 0 lo baja.
 static void blWrite(bool off) {
 #if BL_MODE == BL_MODE_DIRECT_OD
   gpio_set_level((gpio_num_t)PIN_BL, off ? 0 : 1);
