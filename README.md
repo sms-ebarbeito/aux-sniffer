@@ -96,37 +96,49 @@ VCC MAX485 = 3V3 · GND común
 Si A y B quedan invertidos, no pasa nada: el decodificador detecta la
 polaridad en cada ráfaga.
 
-### Backlight: modo directo open-drain (`BL_MODE_DIRECT_OD`, por defecto)
+### Backlight: cableado final (modo directo, `BL_MODE_DIRECT_OD`, el default)
+
+Montado y probado: el backlight se apaga con el reposo de pantalla y vuelve
+al despertar.
 
 ```
-3,3 V adaptador ──[1 kΩ de la placa]──┬── BL_EN del panel
-                                      │  (pad del lado del conector)
-                                      └──────────► GPIO5 (PIN_BL) del ESP32
-3,3 V adaptador ─────────────────────────────────► 3V3 de la SuperMini
-GND adaptador ───────────────────────────────────► GND
+                              pista BL_EN
+ adaptador (original) ────────────╳──────────┬─────────────┬──── BL_EN del panel
+                                cortada      │             │
+                                           10 kΩ         GPIO5 (PIN_BL)
+                                    (externa, lado panel)  open-drain, sin pulls
+                                             │
+                                     3,3 V del adaptador
+
+3,3 V del adaptador ──► 3V3 de la SuperMini y VCC del MAX485
+GND del adaptador ────► GND
 ```
 
-- **Backlight OFF:** el GPIO pone LOW y absorbe 3,3 mA por el 1 kΩ.
+- **La pista de BL_EN está cortada.** El adaptador ya no maneja BL_EN: lo
+  definen solo la pull-up externa de 10 kΩ, soldada del lado del panel, y el
+  GPIO5.
+- **Backlight OFF:** el GPIO pone LOW y absorbe unos 0,33 mA por los 10 kΩ.
 - **Backlight ON:** el GPIO queda suelto, en open-drain y alta impedancia, y
-  el 1 kΩ sube BL_EN.
-- El pin se configura sin pull-up ni pull-down internos, en `initVariant()`,
-  antes de `setup()`. Durante el bootloader está en su estado de reset, que es
-  una entrada. Ante un reset por watchdog, un panic o un `esp_restart()`,
-  vuelve a quedar suelto. Es decir, **cualquier falla deja el backlight
-  encendido**.
-- **El ESP32 se tiene que alimentar del mismo 3,3 V del adaptador.** Si se
-  alimenta de otra fuente y queda sin tensión mientras el panel está
-  encendido, el diodo de protección del GPIO lleva BL_EN a unos 0,6 V a través
-  del 1 kΩ. El backlight se apaga y además se alimenta al ESP32 por el pin. Si
-  las dos fuentes de 3,3 V difieren, también circula corriente por ese diodo.
-  Ojo: en ese caso la SuperMini se alimenta por el pin **3V3**, sin pasar por
-  su regulador.
+  la pull-up lleva BL_EN a 3,3 V.
+- **Por qué la pull-up es externa:** una pull-up interna del ESP32 solo existe
+  mientras el firmware corre y la configura. Durante el reset, el bootloader
+  o la grabación, después de un cuelgue, o con el chip en reset, el pin queda
+  en su estado por defecto y BL_EN quedaría flotando. La de 10 kΩ no depende
+  del ESP32, así que **en cualquiera de esos casos el backlight queda
+  encendido**. Por eso el firmware configura el pin **sin pulls internos**,
+  en `initVariant()`, antes de `setup()`. Ante un watchdog, un panic o un
+  `esp_restart()`, el pin vuelve a quedar suelto.
+- **El ESP32 tiene que alimentarse del mismo 3,3 V que la pull-up.** Si el
+  ESP32 quedara sin tensión con el adaptador encendido (por ejemplo, con el
+  cable de 3V3 suelto), el diodo de protección del GPIO llevaría BL_EN a unos
+  0,6 V a través de los 10 kΩ y el backlight se apagaría. La SuperMini se
+  alimenta por el pin **3V3**, sin pasar por su regulador.
 
-### Backlight: modo MOSFET (`BL_MODE_MOSFET`, el del SPEC)
+### Backlight: alternativa con MOSFET (`BL_MODE_MOSFET`, no montada)
 
 ```
 GPIO5 (PIN_BL) ──100Ω──┬── gate 2N7002
-                      100kΩ             drain ── pad lado-conector del 1 kΩ (BL_EN)
+                      100kΩ             drain ── BL_EN (con su pull-up)
                        │                source ── GND
                       GND
 ```
@@ -135,8 +147,8 @@ GPIO5 (PIN_BL) ──100Ω──┬── gate 2N7002
 - **LOW, o el pin sin configurar:** el pulldown de 100 kΩ deja el **backlight
   encendido**.
 
-En este modo el ESP32 puede tener su propia alimentación, pero el GND tiene
-que ser común.
+Sirve si el ESP32 tiene su propia alimentación, con GND común. Se compila
+con `EXTRA="-DBL_MODE=BL_MODE_MOSFET" ./build.sh`.
 
 ### LED
 
@@ -214,10 +226,19 @@ Para recibir ráfagas sin perder ninguna, la ISR (`on_recv_done`) rearma el RMT
 enseguida con el siguiente buffer de un anillo de 4 y pasa la ráfaga a una
 tarea de alta prioridad por una cola. Esa tarea decodifica y mueve el pin.
 
-## Pendiente de verificar en hardware
+## Estado en hardware
 
-- Que el ping-pong del RMT en la C3 entregue ráfagas completas a 1 Mbps. El
-  contador `truncadas` lo muestra.
-- El nivel real de BL_EN en modo directo, con el panel encendido y apagado.
-- En la WROOM, que no tiene ping-pong, qué pasa con ráfagas de más de 256
-  símbolos (lecturas de EDID). Deberían truncarse sin afectar a la `0x600`.
+**Probado** con la ESP32-C3 SuperMini y el cableado final (modo directo con
+pull-up externa de 10 kΩ): el backlight se apaga con el reposo de pantalla y
+vuelve al despertar.
+
+**Sin verificar todavía:**
+
+- **Suspensión del sistema.** El SPEC §6 dice que manda el mismo
+  `WRITE 0x600 = 02`.
+- **Contador `truncadas`.** Mostraría si el ping-pong del RMT entrega
+  ráfagas completas también en las lecturas largas. La escritura a `0x600`
+  ya se decodifica bien.
+- **WROOM y S3.** Compilan, pero no se probaron. En la WROOM, que no tiene
+  ping-pong, las ráfagas de más de 256 símbolos (lecturas de EDID) deberían
+  truncarse sin afectar a la `0x600`.

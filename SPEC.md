@@ -28,22 +28,42 @@ VCC módulo = 3V3 del ESP32 · GND común con el adaptador
 - RO es una señal digital de 0 / 3,3 V: va **directo** al GPIO, sin divisor.
 - El acople AC (10 nF) es imprescindible. Con acople DC el receptor solo producía glitches.
 
-**Salida de backlight (pendiente de montar):**
+**Salida de backlight, cableado final (montado y probado con una ESP32-C3 SuperMini, modo `BL_MODE_DIRECT_OD`):**
 
 ```
-GPIO_BL_OFF ──100Ω──┬── gate 2N7002
-                   100kΩ
-                    │
-                   GND        drain ── pad lado-conector de la R de 1kΩ que alimenta BL_EN
-                              source ── GND
+                              pista BL_EN
+ adaptador (original) ────────────╳──────────┬─────────────┬──── BL_EN del panel
+                                cortada      │             │
+                                           10 kΩ         GPIO_BL (GPIO5)
+                                    (externa, lado panel)  open-drain, sin pulls internos
+                                             │
+                                     3,3 V del adaptador
+
+ESP32 (pin 3V3) y MAX485 alimentados del mismo 3,3 V del adaptador · GND común
 ```
 
-- **GPIO_BL_OFF en HIGH**: el MOSFET conduce, BL_EN queda a GND y el **backlight se apaga**.
-- **GPIO_BL_OFF en LOW o sin configurar**: gracias al pulldown de 100 kΩ, el **backlight queda encendido**. Es el estado seguro: si el ESP32 se resetea, no arranca o se queda sin alimentación, la pantalla sigue andando.
+- La pista de BL_EN está **cortada**: el adaptador ya no maneja BL_EN. Del lado del panel, una **pull-up externa de 10 kΩ** al 3,3 V del adaptador la mantiene en alto, y el GPIO va directo a esa línea.
+- **GPIO_BL en LOW** (salida open-drain activa): BL_EN queda a GND y el **backlight se apaga**. El pin absorbe unos 0,33 mA.
+- **GPIO_BL suelto** (open-drain en alto, alta impedancia, o pin sin configurar): la pull-up externa lleva BL_EN a 3,3 V y el **backlight queda encendido**. Es el estado seguro.
+- **Por qué la pull-up es externa y no la interna del ESP32:** la interna solo existe cuando el ESP32 corre el firmware y la configura. Durante el reset, el bootloader o la grabación, después de un cuelgue, o con el chip mantenido en reset, el pin queda en su estado por defecto y BL_EN quedaría flotando, con el backlight en un estado indefinido. La de 10 kΩ, en cambio, no depende del ESP32: mientras haya 3,3 V en el adaptador, BL_EN está en alto salvo que el GPIO lo baje activamente. Además, la interna ronda los 45 kΩ y es más sensible al ruido. Por eso el firmware configura el pin **sin pull-up ni pull-down internos**: la línea queda definida solo por la resistencia externa.
+- **El ESP32 se alimenta del mismo 3,3 V que la pull-up.** Si el ESP32 quedara sin tensión mientras el adaptador sigue alimentado (por ejemplo, con el cable de 3V3 suelto), el diodo de protección del GPIO llevaría BL_EN a alrededor de 0,6 V a través de los 10 kΩ y el backlight se apagaría. Con un solo riel, los dos se encienden y se apagan juntos.
+
+**Alternativa con MOSFET (soportada por el firmware como `BL_MODE_MOSFET`, no montada):**
+
+```
+GPIO_BL ──100Ω──┬── gate 2N7002
+               100kΩ
+                │
+               GND        drain ── BL_EN (con su pull-up)
+                          source ── GND
+```
+
+- **GPIO_BL en HIGH**: el MOSFET conduce, BL_EN queda a GND y el **backlight se apaga**.
+- **GPIO_BL en LOW o sin configurar**: gracias al pulldown de 100 kΩ, el **backlight queda encendido**. Sirve si el ESP32 tiene una alimentación separada (con GND común).
 
 **Pines sugeridos.** Hay que evitar los pines de strapping. Para AUX_IN, el pin tiene que poder rutearse al RMT (cualquier GPIO sirve).
 
-| Placa | GPIO_AUX_IN | GPIO_BL_OFF | Evitar |
+| Placa | GPIO_AUX_IN | GPIO_BL | Evitar |
 |---|---|---|---|
 | ESP32 (WROOM) | 4 | 25 | 0, 2, 5, 12, 15, 6–11 |
 | ESP32-S3 | 4 | 5 | 0, 3, 45, 46, 19/20 (USB), 26–32 (flash/PSRAM) |
@@ -117,12 +137,12 @@ Cualquier otra cosa se ignora. Una respuesta nunca tiene 5 bytes que empiecen co
   - **Memoria RMT:** en el ESP32 clásico cada canal tiene 64 símbolos por bloque, así que hay que asignar varios bloques (`mem_block_symbols`). En el S3 se puede usar DMA.
   - **Rearmado:** volver a llamar a `rmt_receive()` **enseguida**. Usar doble buffer y pasar la ráfaga por una cola (`xQueueSendFromISR` desde el callback `on_recv_done`) a una tarea que decodifica. Entre ráfagas hay ≥400 µs, que sobran para rearmar.
 - **Lógica:**
-  - **Al arrancar:** `GPIO_BL_OFF` en LOW lo antes posible (backlight encendido).
-  - **Al detectar `80 06 00 00 02` o `05`:** `GPIO_BL_OFF` en HIGH.
-  - **Al detectar `80 06 00 00 01`:** `GPIO_BL_OFF` en LOW.
+  - **Al arrancar:** backlight encendido lo antes posible. En modo directo (el montado), `GPIO_BL` en open-drain, suelto y sin pulls internos. En modo MOSFET, `GPIO_BL` en LOW.
+  - **Al detectar `80 06 00 00 02` o `05`:** backlight OFF. En modo directo, `GPIO_BL` en LOW; en modo MOSFET, en HIGH.
+  - **Al detectar `80 06 00 00 01`:** backlight ON. En modo directo, `GPIO_BL` suelto; en modo MOSFET, en LOW.
   - No hace falta antirrebote: cada evento es una escritura única.
 - **Depuración por Serial (115200):** en modo debug, imprimir cada pedido decodificado (dirección, comando, datos), nunca desde la ISR o el callback. Indicar el cambio de estado con el LED de la placa.
-- **Watchdog** habilitado. Si algo falla, el reset deja el backlight encendido por el pulldown.
+- **Watchdog** habilitado. Si algo falla, el reset suelta el pin y el backlight queda encendido: por la pull-up externa de 10 kΩ en modo directo, o por el pulldown del gate en modo MOSFET.
 
 ## 6. Secuencias reales observadas (macOS, Mac mini y MacBook)
 
