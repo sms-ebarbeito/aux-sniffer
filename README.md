@@ -1,174 +1,175 @@
 # aux-sniffer
 
-Firmware para ESP32 que escucha el canal DisplayPort AUX de forma pasiva y
-apaga o prende el backlight del panel según las escrituras del host al
-registro DPCD `0x600` (SET_POWER). La especificación completa está en
-[SPEC.md](SPEC.md). La placa principal es la **ESP32-C3 SuperMini**; ESP32
-(WROOM) y ESP32-S3 compilan, pero son secundarias.
+ESP32 firmware that passively listens to the DisplayPort AUX channel and
+turns the panel backlight off or on according to the host's writes to the
+DPCD register `0x600` (SET_POWER). The full specification is in
+[SPEC.md](SPEC.md). The main board is the **ESP32-C3 SuperMini**; ESP32
+(WROOM) and ESP32-S3 build too, but are secondary.
 
 ```
 firmware/aux_sniffer/
-  aux_sniffer.ino   RMT RX, tareas, backlight, Serial
-  config.h          ÚNICO lugar a tocar: placa, pines, modo de backlight, RMT
-  auxdec.h/.cpp     decodificador AUX sin dependencias de Arduino
-test/               test de host (clang) con las ráfagas reales
-build.sh            compila para c3 / s3 / wroom
+  aux_sniffer.ino   RMT RX, tasks, backlight, Serial
+  config.h          the ONLY file to touch: board, pins, backlight mode, RMT
+  auxdec.h/.cpp     AUX decoder with no Arduino dependencies
+test/               host test (clang) with the real bursts
+build.sh            builds for c3 / s3 / wroom
 ```
 
-## Test del decodificador (en la Mac, sin hardware)
+## Decoder test (on the Mac, no hardware)
 
 ```sh
 make -C test
 ```
 
-Corre las tres ráfagas reales de `testvectors_0x600.json` y verifica los bytes
-del pedido, la respuesta (ACK) y la acción. También prueba la polaridad
-invertida, el camino completo de símbolos RMT a 10 y 20 MHz, jitter de ±100 ns,
-dos transacciones en la misma ráfaga y ruido aleatorio. Además, **corta cada
-ráfaga en todos los puntos posibles**, por corrida y por símbolo RMT, y
-verifica que nunca salga una acción equivocada y que, una vez completo el
-pedido, salga siempre la correcta:
+Runs the three real bursts from `testvectors_0x600.json` and checks the
+request bytes, the reply (ACK) and the action. It also tests inverted
+polarity, the full RMT-symbol path at 10 and 20 MHz, ±100 ns of jitter, two
+transactions in the same burst, and random noise. On top of that, it **cuts
+each burst at every possible point**, by run and by RMT symbol, and checks
+that a wrong action never comes out and that, once the request is complete,
+the right one always does:
 
 ```
-t=13.100240s 80 06 00 00 02    acción correcta desde 139/193 corridas,  70/97 símbolos RMT
-t=35.044497s 80 06 00 00 01    acción correcta desde 140/195 corridas,  70/98 símbolos RMT
+t=13.100240s 80 06 00 00 02    correct action from 139/193 runs,  70/97 RMT symbols
+t=35.044497s 80 06 00 00 01    correct action from 140/195 runs,  70/98 RMT symbols
 ```
 
-## Compilar
+## Building
 
 ```sh
-./build.sh          # ESP32-C3 SuperMini (por defecto)
-./build.sh all      # c3, s3 y wroom
+./build.sh          # ESP32-C3 SuperMini (default)
+./build.sh all      # c3, s3 and wroom
 ```
 
-El script usa estos FQBN:
+The script uses these FQBNs:
 
-| Placa | FQBN |
+| Board | FQBN |
 |---|---|
 | C3 SuperMini | `esp32:esp32:esp32c3:CDCOnBoot=cdc` |
 | S3 | `esp32:esp32:esp32s3:CDCOnBoot=cdc` |
 | WROOM | `esp32:esp32:esp32` |
 
-En la SuperMini, **`CDCOnBoot=cdc` es obligatorio**: la placa no tiene chip
-USB-serie y el Serial sale por el USB nativo (GPIO18/19). El binario queda en
-`build/<placa>/`.
+On the SuperMini, **`CDCOnBoot=cdc` is required**: the board has no
+USB-serial chip and Serial goes out over native USB (GPIO18/19). The binary
+ends up in `build/<board>/`.
 
-Para cambiar la configuración sin editar `config.h`, por ejemplo para usar el
-modo MOSFET:
+To change the configuration without editing `config.h`, for example to use
+MOSFET mode:
 
 ```sh
 EXTRA="-DBL_MODE=BL_MODE_MOSFET" ./build.sh
 ```
 
-> **Apple Silicon sin Rosetta:** el `ctags` que instala arduino-cli es x86_64
-> y no corre. `build.sh` lo detecta y usa `tools/ctags-noop`, que no hace
-> nada. El sketch no necesita los prototipos que genera ctags. Si se instala
-> Rosetta (`softwareupdate --install-rosetta`), el script vuelve solo a usar el
-> ctags normal. Para compilar a mano sin el script, hay que agregar
+> **Apple Silicon without Rosetta:** the `ctags` that arduino-cli installs is
+> x86_64 and doesn't run. `build.sh` detects this and uses
+> `tools/ctags-noop`, which does nothing. The sketch doesn't need the
+> prototypes ctags generates. If Rosetta gets installed
+> (`softwareupdate --install-rosetta`), the script goes back to the regular
+> ctags on its own. To build by hand without the script, add
 > `--build-property "tools.ctags.path=$PWD/tools/ctags-noop"`.
 
-## Flashear
+## Flashing
 
 ```sh
-arduino-cli board list          # buscar el puerto, p. ej. /dev/cu.usbmodem1101
+arduino-cli board list          # find the port, e.g. /dev/cu.usbmodem1101
 ./build.sh c3
 arduino-cli upload -p /dev/cu.usbmodem1101 \
   --fqbn esp32:esp32:esp32c3:CDCOnBoot=cdc --input-dir build/c3
 arduino-cli monitor -p /dev/cu.usbmodem1101 -c baudrate=115200
 ```
 
-Si la SuperMini no entra en modo de grabación, mantener apretado **BOOT**
-(GPIO9), tocar **RESET** y soltar BOOT. Después de grabar, un RESET la arranca
-normalmente.
+If the SuperMini doesn't enter download mode, hold **BOOT** (GPIO9), tap
+**RESET** and release BOOT. After flashing, a RESET boots it normally.
 
-## Cableado (C3 SuperMini)
+## Wiring (C3 SuperMini)
 
-### Receptor AUX (igual que en el SPEC)
+### AUX receiver (same as in the SPEC)
 
 ```
-AUX+ (pin 15 eDP) ──1kΩ──||10nF──► A ┐
-AUX- (pin 16 eDP) ──1kΩ──||10nF──► B ├ MAX485 a 3,3 V (sin R7, R5 ni R6)
+AUX+ (eDP pin 15) ──1kΩ──||10nF──► A ┐
+AUX- (eDP pin 16) ──1kΩ──||10nF──► B ├ MAX485 at 3.3 V (R7, R5 and R6 removed)
                 RE, DE ──► GND       │
                 RO ──────────────────┴──► GPIO4 (PIN_AUX_IN)
-VCC MAX485 = 3V3 · GND común
+MAX485 VCC = 3V3 · common GND
 ```
 
-Si A y B quedan invertidos, no pasa nada: el decodificador detecta la
-polaridad en cada ráfaga.
+If A and B end up swapped, nothing breaks: the decoder detects the polarity
+on every burst.
 
-### Backlight: cableado final (modo directo, `BL_MODE_DIRECT_OD`, el default)
+### Backlight: final wiring (direct mode, `BL_MODE_DIRECT_OD`, the default)
 
-Montado y probado: el backlight se apaga con el reposo de pantalla y vuelve
-al despertar.
+Installed and tested: the backlight turns off on display sleep and comes back
+on wake.
 
 ```
-                              pista BL_EN
- adaptador (original) ────────────╳──────────┬─────────────┬──── BL_EN del panel
-                                cortada      │             │
+                              BL_EN trace
+ adapter (original) ──────────────╳──────────┬─────────────┬──── panel BL_EN
+                                 cut         │             │
                                            10 kΩ         GPIO5 (PIN_BL)
-                                    (externa, lado panel)  open-drain, sin pulls
+                                  (external, panel side)   open-drain, no pulls
                                              │
-                                     3,3 V del adaptador
+                                     adapter 3.3 V
 
-3,3 V del adaptador ──► 3V3 de la SuperMini y VCC del MAX485
-GND del adaptador ────► GND
+adapter 3.3 V ──► SuperMini 3V3 and MAX485 VCC
+adapter GND ────► GND
 ```
 
-- **La pista de BL_EN está cortada.** El adaptador ya no maneja BL_EN: lo
-  definen solo la pull-up externa de 10 kΩ, soldada del lado del panel, y el
+- **The BL_EN trace is cut.** The adapter no longer drives BL_EN: it is set
+  only by the external 10 kΩ pull-up, soldered on the panel side, and by
   GPIO5.
-- **Backlight OFF:** el GPIO pone LOW y absorbe unos 0,33 mA por los 10 kΩ.
-- **Backlight ON:** el GPIO queda suelto, en open-drain y alta impedancia, y
-  la pull-up lleva BL_EN a 3,3 V.
-- **Por qué la pull-up es externa:** una pull-up interna del ESP32 solo existe
-  mientras el firmware corre y la configura. Durante el reset, el bootloader
-  o la grabación, después de un cuelgue, o con el chip en reset, el pin queda
-  en su estado por defecto y BL_EN quedaría flotando. La de 10 kΩ no depende
-  del ESP32, así que **en cualquiera de esos casos el backlight queda
-  encendido**. Por eso el firmware configura el pin **sin pulls internos**,
-  en `initVariant()`, antes de `setup()`. Ante un watchdog, un panic o un
-  `esp_restart()`, el pin vuelve a quedar suelto.
-- **El ESP32 tiene que alimentarse del mismo 3,3 V que la pull-up.** Si el
-  ESP32 quedara sin tensión con el adaptador encendido (por ejemplo, con el
-  cable de 3V3 suelto), el diodo de protección del GPIO llevaría BL_EN a unos
-  0,6 V a través de los 10 kΩ y el backlight se apagaría. La SuperMini se
-  alimenta por el pin **3V3**, sin pasar por su regulador.
+- **Backlight OFF:** the GPIO drives LOW and sinks about 0.33 mA through the
+  10 kΩ.
+- **Backlight ON:** the GPIO is released (open-drain, high impedance) and the
+  pull-up takes BL_EN to 3.3 V.
+- **Why the pull-up is external:** an internal ESP32 pull-up only exists
+  while the firmware is running and has configured it. During reset, the
+  bootloader or flashing, after a hang, or with the chip held in reset, the
+  pin is in its default state and BL_EN would float. The 10 kΩ doesn't depend
+  on the ESP32, so **in any of those cases the backlight stays on**. That's
+  why the firmware configures the pin **with no internal pulls**, in
+  `initVariant()`, before `setup()`. On a watchdog, a panic or an
+  `esp_restart()`, the pin is released again.
+- **The ESP32 must be powered from the same 3.3 V as the pull-up.** If the
+  ESP32 lost power while the adapter stayed on (for example, with the 3V3
+  wire disconnected), the GPIO protection diode would pull BL_EN down to about
+  0.6 V through the 10 kΩ and the backlight would turn off. The SuperMini is
+  powered through its **3V3** pin, bypassing its regulator.
 
-### Backlight: alternativa con MOSFET (`BL_MODE_MOSFET`, no montada)
+### Backlight: MOSFET alternative (`BL_MODE_MOSFET`, not installed)
 
 ```
-GPIO5 (PIN_BL) ──100Ω──┬── gate 2N7002
-                      100kΩ             drain ── BL_EN (con su pull-up)
+GPIO5 (PIN_BL) ──100Ω──┬── 2N7002 gate
+                      100kΩ             drain ── BL_EN (with its pull-up)
                        │                source ── GND
                       GND
 ```
 
-- **HIGH:** el MOSFET conduce y el **backlight se apaga**.
-- **LOW, o el pin sin configurar:** el pulldown de 100 kΩ deja el **backlight
-  encendido**.
+- **HIGH:** the MOSFET conducts and the **backlight turns off**.
+- **LOW, or the pin unconfigured:** the 100 kΩ pull-down keeps the
+  **backlight on**.
 
-Sirve si el ESP32 tiene su propia alimentación, con GND común. Se compila
-con `EXTRA="-DBL_MODE=BL_MODE_MOSFET" ./build.sh`.
+Useful if the ESP32 has its own power supply, with a common GND. Build it
+with `EXTRA="-DBL_MODE=BL_MODE_MOSFET" ./build.sh`.
 
 ### LED
 
-El LED azul de la SuperMini está en GPIO8, activo en bajo. **Encendido
-significa que el ESP32 está apagando el backlight.** Al arrancar parpadea 3
-veces. GPIO8 es de strapping: solo se usa como salida después del arranque.
+The SuperMini's blue LED is on GPIO8, active low. **Lit means the ESP32 is
+turning the backlight off.** It blinks 3 times at boot. GPIO8 is a strapping
+pin: it's only used as an output after boot.
 
-## Qué se ve por Serial (115200, modo debug)
+## What you see on Serial (115200, debug mode)
 
-La depuración viene activada (`AUX_DEBUG 1` en `config.h`). Comandos por la
-consola: **`d`** activa o desactiva el debug, **`s`** muestra estadísticas y
-**`h`** repite el encabezado.
+Debug output is on by default (`AUX_DEBUG 1` in `config.h`). Console
+commands: **`d`** toggles debug, **`s`** prints statistics and **`h`** repeats
+the header.
 
-Ejemplo armado con las secuencias del SPEC §6 (todavía no es una captura real
-del ESP32):
+Example built from the sequences in SPEC §6 (not yet a real capture from the
+ESP32):
 
 ```
-aux-sniffer | ESP32-C3 SuperMini | AUX_IN=GPIO4 BL=GPIO5 (directo open-drain, LOW=OFF) LED=GPIO8
-RMT 10000000 Hz, mem 96 símbolos, buffer 4 x 512, filtro 150 ns, fin de ráfaga 10000 ns
-debug=on  (teclas: d=debug on/off, s=stats, h=ayuda)
+aux-sniffer | ESP32-C3 SuperMini | AUX_IN=GPIO4 BL=GPIO5 (direct open-drain, LOW=OFF) LED=GPIO8
+RMT 10000000 Hz, mem 96 symbols, buffer 4 x 512, filter 150 ns, end of burst 10000 ns
+debug=on  (keys: d=debug on/off, s=stats, h=help)
 [     13.100] REQ  Native WRITE 0x00600 len=1 data=02
 [     13.100]      REPLY ACK
 [     13.100] >>> BACKLIGHT OFF
@@ -179,70 +180,67 @@ debug=on  (teclas: d=debug on/off, s=stats, h=ayuda)
 [     35.044] >>> BACKLIGHT ON
 [     35.050] REQ  Native WRITE 0x00100 len=1 data=0a
 ...
-stats: ráfagas=412 ruido=0 sin_sync=0 truncadas=0 mensajes=824 descartadas=0 log_perdido=0 rearmados=0 | backlight=ON rmt=ok
+stats: bursts=412 noise=0 no_sync=0 truncated=0 messages=824 dropped=0 log_lost=0 rearms=0 | backlight=ON rmt=ok
 ```
 
-- **Tiempo:** segundos desde el arranque.
-- **`REQ`:** el pedido de la fuente. La línea siguiente es la respuesta del
-  panel, que viene en la misma ráfaga.
-- **`>>> BACKLIGHT`:** aparece siempre, aunque el debug esté apagado.
-- **`?? ráfaga sin SYNC`:** una ráfaga de 20 corridas o más que no se pudo
-  decodificar.
-- **`stats`:** se imprime cada 10 s si hubo tráfico. Los contadores son:
-  - `truncadas`: ráfagas que no entraron en el buffer.
-  - `descartadas`: ráfagas perdidas porque la cola estaba llena.
-  - `log_perdido`: líneas de debug que no se imprimieron. Nunca afecta la
-    acción.
-  - `rearmados`: veces que hubo que reiniciar el RMT.
+- **Time:** seconds since boot.
+- **`REQ`:** the source's request. The next line is the panel's reply, which
+  arrives in the same burst.
+- **`>>> BACKLIGHT`:** always printed, even with debug off.
+- **`?? burst without SYNC`:** a burst of 20 runs or more that couldn't be
+  decoded.
+- **`stats`:** printed every 10 s if there was traffic. The counters are:
+  - `truncated`: bursts that didn't fit in the buffer.
+  - `dropped`: bursts lost because the queue was full.
+  - `log_lost`: debug lines that weren't printed. Never affects the action.
+  - `rearms`: times the RMT had to be restarted.
 
-El Serial se imprime desde `loop()`, que tiene prioridad baja, a través de una
-cola. Si el puerto es lento o nadie lo está leyendo, se pierden líneas de log,
-pero nunca se demora el control del backlight.
+Serial output is printed from `loop()`, which runs at low priority, through a
+queue. If the port is slow or nobody is reading it, log lines are lost, but
+backlight control is never delayed.
 
-## Cómo entra una ráfaga en el RMT de la C3
+## How a burst fits in the C3 RMT
 
-El RMT de la C3 tiene 2 canales RX con 48 símbolos de memoria cada uno y
-**no tiene DMA**. Una escritura con su ACK ocupa unos 98 símbolos, y el pedido
-solo, 70.
+The C3 RMT has 2 RX channels with 48 symbols of memory each and **no DMA**. A
+write with its ACK takes about 98 symbols, and the request alone, 70.
 
-1. **Dos bloques encadenados.** El canal RX usa `mem_block_symbols = 96`, es
-   decir, su bloque más el del otro canal RX, que queda sin usar.
-2. **Ping-pong del driver.** El core 3.3.10 trae ESP-IDF v5.5.4, que en
-   targets con `SOC_RMT_SUPPORT_RX_PINGPONG` (C3 y S3) usa la memoria RMT como
-   ping-pong. En cada mitad (48 símbolos, unos 50 a 100 µs de señal), una
-   interrupción copia los datos al buffer de usuario, que es de 512 símbolos.
-   Así entra la ráfaga completa, incluso una lectura de 16 bytes, que ronda
-   los 210 símbolos. Lo verifiqué en `soc_caps.h` y en los símbolos de
-   `libesp_driver_rmt.a` (`ping_pong_symbols`, `en_partial_rx`). No usé
-   `flags.en_partial_rx` (que también está disponible): sirve cuando el
-   buffer de usuario es más chico que la ráfaga, y acá no lo es.
-3. **Tolerancia a cortes.** Si por alguna razón la ráfaga se corta, el
-   decodificador procesa lo que llegó. Por ejemplo, si el ping-pong no
-   alcanzara y solo quedaran los 96 símbolos de la memoria, alcanza igual: el
-   pedido se completa en el símbolo 70. El test de host lo verifica cortando
-   en cada símbolo.
+1. **Two chained blocks.** The RX channel uses `mem_block_symbols = 96`, i.e.
+   its own block plus the other RX channel's, which is left unused.
+2. **Driver ping-pong.** Core 3.3.10 ships ESP-IDF v5.5.4, which on targets
+   with `SOC_RMT_SUPPORT_RX_PINGPONG` (C3 and S3) uses the RMT memory as a
+   ping-pong buffer. On each half (48 symbols, about 50 to 100 µs of signal),
+   an interrupt copies the data into the user buffer, which holds 512
+   symbols. That way the whole burst fits, even a 16-byte read, which is
+   around 210 symbols. This was checked in `soc_caps.h` and in the symbols of
+   `libesp_driver_rmt.a` (`ping_pong_symbols`, `en_partial_rx`).
+   `flags.en_partial_rx` (also available) isn't used: it's meant for when the
+   user buffer is smaller than the burst, which isn't the case here.
+3. **Tolerance to cuts.** If for any reason the burst gets cut, the decoder
+   processes whatever arrived. For example, if ping-pong fell short and only
+   the 96 symbols of RMT memory were left, that's still enough: the request
+   is complete at symbol 70. The host test checks this by cutting at every
+   symbol.
 
-Para recibir ráfagas sin perder ninguna, la ISR (`on_recv_done`) rearma el RMT
-enseguida con el siguiente buffer de un anillo de 4 y pasa la ráfaga a una
-tarea de alta prioridad por una cola. Esa tarea decodifica y mueve el pin.
+To receive bursts without losing any, the ISR (`on_recv_done`) re-arms the
+RMT right away with the next buffer from a ring of 4 and hands the burst to a
+high-priority task through a queue. That task decodes it and drives the pin.
 
-## Estado en hardware
+## Hardware status
 
-**Probado** con la ESP32-C3 SuperMini y el cableado final (modo directo con
-pull-up externa de 10 kΩ): el backlight se apaga con el reposo de pantalla y
-vuelve al despertar.
+**Tested** with the ESP32-C3 SuperMini and the final wiring (direct mode with
+an external 10 kΩ pull-up): the backlight turns off on display sleep and
+comes back on wake.
 
-**Sin verificar todavía:**
+**Not verified yet:**
 
-- **Suspensión del sistema.** El SPEC §6 dice que manda el mismo
-  `WRITE 0x600 = 02`.
-- **Contador `truncadas`.** Mostraría si el ping-pong del RMT entrega
-  ráfagas completas también en las lecturas largas. La escritura a `0x600`
-  ya se decodifica bien.
-- **WROOM y S3.** Compilan, pero no se probaron. En la WROOM, que no tiene
-  ping-pong, las ráfagas de más de 256 símbolos (lecturas de EDID) deberían
-  truncarse sin afectar a la `0x600`.
+- **System sleep.** SPEC §6 says it sends the same `WRITE 0x600 = 02`.
+- **The `truncated` counter.** It would show whether the RMT ping-pong
+  delivers complete bursts for long reads too. The `0x600` write already
+  decodes correctly.
+- **WROOM and S3.** They build but haven't been tested. On the WROOM, which
+  has no ping-pong, bursts longer than 256 symbols (EDID reads) should get
+  truncated without affecting `0x600`.
 
-## Licencia
+## License
 
 [MIT](LICENSE). Copyright (c) 2026 Enrique Barbeito.

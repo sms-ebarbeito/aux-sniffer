@@ -1,181 +1,181 @@
-# ESP32 DP-AUX sniffer → control de backlight (especificación para firmware)
+# ESP32 DP-AUX sniffer → backlight control (firmware specification)
 
-## 1. Objetivo
+## 1. Goal
 
-Adaptador pasivo USB-C/miniDP → eDP con un panel 1920x1200. El adaptador **nunca apaga el backlight**: cuando la Mac duerme la pantalla o se suspende, el panel queda negro pero iluminado.
+Passive USB-C/miniDP → eDP adapter with a 1920x1200 panel. The adapter **never turns the backlight off**: when the Mac puts the display to sleep or goes to sleep itself, the panel goes black but stays lit.
 
-El ESP32 escucha el canal **DisplayPort AUX** (solo escucha, nunca transmite), detecta la escritura del host al registro DPCD **0x00600 (SET_POWER)** y controla la línea **BL_EN** del panel:
+The ESP32 listens to the **DisplayPort AUX** channel (listen only, never transmits), detects the host's write to DPCD register **0x00600 (SET_POWER)** and controls the panel's **BL_EN** line:
 
-| Escritura detectada | Significado | Acción |
+| Detected write | Meaning | Action |
 |---|---|---|
-| `0x600 = 0x01` | D0, panel encendido | Backlight **ON** |
-| `0x600 = 0x02` | D3, panel apagado | Backlight **OFF** |
-| `0x600 = 0x05` | D3 con AUX activo (DP 1.4; no observado, pero tratar igual) | Backlight **OFF** |
+| `0x600 = 0x01` | D0, panel on | Backlight **ON** |
+| `0x600 = 0x02` | D3, panel off | Backlight **OFF** |
+| `0x600 = 0x05` | D3 with AUX active (DP 1.4; not observed, but treat the same) | Backlight **OFF** |
 
-Todo esto está **verificado con capturas reales** con un analizador lógico, una Mac mini y una MacBook (mismo macOS). Ver la sección 6.
+All of this is **verified with real captures** using a logic analyzer, a Mac mini and a MacBook (same macOS). See section 6.
 
-## 2. Hardware (ya armado y probado)
-
-```
-vía AUX+ (pin 15 conector eDP 40p) ──1kΩ──||10nF──► A  ┐
-vía AUX- (pin 16 conector eDP 40p) ──1kΩ──||10nF──► B  ├ módulo MAX485 (Arduino) a 3,3 V
-                                                       │  R7 (120Ω), R5 y R6 (bias) REMOVIDAS
-                                    RE, DE ──► GND     │  RE y DE a GND = solo receptor
-                                    RO ─────────────────┴──► GPIO_AUX_IN del ESP32
-VCC módulo = 3V3 del ESP32 · GND común con el adaptador
-```
-
-- RO es una señal digital de 0 / 3,3 V: va **directo** al GPIO, sin divisor.
-- El acople AC (10 nF) es imprescindible. Con acople DC el receptor solo producía glitches.
-
-**Salida de backlight, cableado final (montado y probado con una ESP32-C3 SuperMini, modo `BL_MODE_DIRECT_OD`):**
+## 2. Hardware (already built and tested)
 
 ```
-                              pista BL_EN
- adaptador (original) ────────────╳──────────┬─────────────┬──── BL_EN del panel
-                                cortada      │             │
+AUX+ via (eDP 40p connector pin 15) ──1kΩ──||10nF──► A  ┐
+AUX- via (eDP 40p connector pin 16) ──1kΩ──||10nF──► B  ├ MAX485 module (Arduino) at 3.3 V
+                                                        │  R7 (120Ω), R5 and R6 (bias) REMOVED
+                                     RE, DE ──► GND     │  RE and DE to GND = receiver only
+                                     RO ─────────────────┴──► ESP32 GPIO_AUX_IN
+Module VCC = ESP32 3V3 · GND common with the adapter
+```
+
+- RO is a 0 / 3.3 V digital signal: it goes **straight** to the GPIO, no divider.
+- The AC coupling (10 nF) is essential. With DC coupling the receiver only produced glitches.
+
+**Backlight output, final wiring (installed and tested with an ESP32-C3 SuperMini, `BL_MODE_DIRECT_OD` mode):**
+
+```
+                              BL_EN trace
+ adapter (original) ──────────────╳──────────┬─────────────┬──── panel BL_EN
+                                 cut         │             │
                                            10 kΩ         GPIO_BL (GPIO5)
-                                    (externa, lado panel)  open-drain, sin pulls internos
+                                  (external, panel side)   open-drain, no internal pulls
                                              │
-                                     3,3 V del adaptador
+                                     adapter 3.3 V
 
-ESP32 (pin 3V3) y MAX485 alimentados del mismo 3,3 V del adaptador · GND común
+ESP32 (3V3 pin) and MAX485 powered from the same adapter 3.3 V · common GND
 ```
 
-- La pista de BL_EN está **cortada**: el adaptador ya no maneja BL_EN. Del lado del panel, una **pull-up externa de 10 kΩ** al 3,3 V del adaptador la mantiene en alto, y el GPIO va directo a esa línea.
-- **GPIO_BL en LOW** (salida open-drain activa): BL_EN queda a GND y el **backlight se apaga**. El pin absorbe unos 0,33 mA.
-- **GPIO_BL suelto** (open-drain en alto, alta impedancia, o pin sin configurar): la pull-up externa lleva BL_EN a 3,3 V y el **backlight queda encendido**. Es el estado seguro.
-- **Por qué la pull-up es externa y no la interna del ESP32:** la interna solo existe cuando el ESP32 corre el firmware y la configura. Durante el reset, el bootloader o la grabación, después de un cuelgue, o con el chip mantenido en reset, el pin queda en su estado por defecto y BL_EN quedaría flotando, con el backlight en un estado indefinido. La de 10 kΩ, en cambio, no depende del ESP32: mientras haya 3,3 V en el adaptador, BL_EN está en alto salvo que el GPIO lo baje activamente. Además, la interna ronda los 45 kΩ y es más sensible al ruido. Por eso el firmware configura el pin **sin pull-up ni pull-down internos**: la línea queda definida solo por la resistencia externa.
-- **El ESP32 se alimenta del mismo 3,3 V que la pull-up.** Si el ESP32 quedara sin tensión mientras el adaptador sigue alimentado (por ejemplo, con el cable de 3V3 suelto), el diodo de protección del GPIO llevaría BL_EN a alrededor de 0,6 V a través de los 10 kΩ y el backlight se apagaría. Con un solo riel, los dos se encienden y se apagan juntos.
+- The BL_EN trace is **cut**: the adapter no longer drives BL_EN. On the panel side, an **external 10 kΩ pull-up** to the adapter's 3.3 V holds it high, and the GPIO goes straight to that line.
+- **GPIO_BL LOW** (open-drain output active): BL_EN goes to GND and the **backlight turns off**. The pin sinks about 0.33 mA.
+- **GPIO_BL released** (open-drain high, high impedance, or pin unconfigured): the external pull-up takes BL_EN to 3.3 V and the **backlight stays on**. This is the safe state.
+- **Why the pull-up is external rather than the ESP32's internal one:** the internal one only exists while the ESP32 runs the firmware and has configured it. During reset, the bootloader or flashing, after a hang, or with the chip held in reset, the pin is in its default state and BL_EN would float, leaving the backlight in an undefined state. The 10 kΩ, on the other hand, doesn't depend on the ESP32: as long as the adapter has 3.3 V, BL_EN is high unless the GPIO actively pulls it low. Also, the internal one is around 45 kΩ and more sensitive to noise. That's why the firmware configures the pin **with no internal pull-up or pull-down**: the line is defined only by the external resistor.
+- **The ESP32 is powered from the same 3.3 V as the pull-up.** If the ESP32 lost power while the adapter stayed powered (for example, with the 3V3 wire disconnected), the GPIO protection diode would pull BL_EN to around 0.6 V through the 10 kΩ and the backlight would turn off. With a single rail, both power up and down together.
 
-**Alternativa con MOSFET (soportada por el firmware como `BL_MODE_MOSFET`, no montada):**
+**MOSFET alternative (supported by the firmware as `BL_MODE_MOSFET`, not installed):**
 
 ```
-GPIO_BL ──100Ω──┬── gate 2N7002
+GPIO_BL ──100Ω──┬── 2N7002 gate
                100kΩ
                 │
-               GND        drain ── BL_EN (con su pull-up)
+               GND        drain ── BL_EN (with its pull-up)
                           source ── GND
 ```
 
-- **GPIO_BL en HIGH**: el MOSFET conduce, BL_EN queda a GND y el **backlight se apaga**.
-- **GPIO_BL en LOW o sin configurar**: gracias al pulldown de 100 kΩ, el **backlight queda encendido**. Sirve si el ESP32 tiene una alimentación separada (con GND común).
+- **GPIO_BL HIGH**: the MOSFET conducts, BL_EN goes to GND and the **backlight turns off**.
+- **GPIO_BL LOW or unconfigured**: thanks to the 100 kΩ pull-down, the **backlight stays on**. Useful if the ESP32 has a separate power supply (with common GND).
 
-**Pines sugeridos.** Hay que evitar los pines de strapping. Para AUX_IN, el pin tiene que poder rutearse al RMT (cualquier GPIO sirve).
+**Suggested pins.** Strapping pins must be avoided. For AUX_IN, the pin must be routable to the RMT (any GPIO works).
 
-| Placa | GPIO_AUX_IN | GPIO_BL | Evitar |
+| Board | GPIO_AUX_IN | GPIO_BL | Avoid |
 |---|---|---|---|
 | ESP32 (WROOM) | 4 | 25 | 0, 2, 5, 12, 15, 6–11 |
 | ESP32-S3 | 4 | 5 | 0, 3, 45, 46, 19/20 (USB), 26–32 (flash/PSRAM) |
 | ESP32-C3 | 4 | 5 | 2, 8, 9, 18/19 (USB) |
 
-## 3. Características de la señal en RO (medidas)
+## 3. Signal characteristics on RO (measured)
 
-- **Codificación:** Manchester-II a 1 Mbps. Bit = 1 µs y medio bit = 0,5 µs.
-- **Asimetría:** las mitades no son simétricas por el umbral del receptor. Se observaron pulsos de **375–625 ns** para medio bit y **875–1125 ns** para bit completo. El decodificador tiene que clasificar por rangos, no por valor exacto.
-- **Nivel en reposo indefinido:** con el acople AC, RO puede quedar en alto o en bajo entre tramas. **No hay que asumir un nivel de reposo.**
-- **Ruido en reposo:** no se observó. Igual conviene descartar ráfagas de menos de 20 flancos.
-- **Mensajes:** cada uno tiene esta estructura:
-  - **Preámbulo:** ~16 ceros Manchester, es decir, pulsos alternados de 0,5 µs.
-  - **SYNC:** 2 µs en un nivel y 2 µs en el otro (4 medios bits + 4 medios bits).
-  - **Datos:** en Manchester.
-  - **STOP:** mismo patrón que el SYNC.
-- **Pedido y respuesta en una sola ráfaga:** la respuesta del panel llega **unos pocos µs** después del STOP del pedido. Con un umbral de inactividad de ~6–10 µs, **pedido y respuesta quedan en la misma ráfaga**, así que el decodificador debe extraer **varios mensajes por ráfaga**.
-- **Polaridad con el cableado actual:**
-  - SYNC = 4 medios bits **en alto** y después 4 **en bajo**.
-  - Bit de datos = **nivel del primer medio bit** (alto = 1).
-  - Si se invierten A y B, toda la señal sale invertida. El decodificador debe probar también el patrón de SYNC invertido y, si lo encuentra, invertir los niveles.
+- **Encoding:** Manchester-II at 1 Mbps. Bit = 1 µs and half-bit = 0.5 µs.
+- **Asymmetry:** the halves aren't symmetric because of the receiver threshold. Pulses of **375–625 ns** were observed for a half-bit and **875–1125 ns** for a full bit. The decoder has to classify by ranges, not by exact value.
+- **Undefined idle level:** with AC coupling, RO can stay high or low between frames. **Don't assume an idle level.**
+- **Idle noise:** none observed. Still, it's worth dropping bursts of fewer than 20 edges.
+- **Messages:** each one has this structure:
+  - **Preamble:** ~16 Manchester zeros, i.e. alternating 0.5 µs pulses.
+  - **SYNC:** 2 µs at one level and 2 µs at the other (4 half-bits + 4 half-bits).
+  - **Data:** Manchester-encoded.
+  - **STOP:** same pattern as the SYNC.
+- **Request and reply in a single burst:** the panel's reply arrives **a few µs** after the request's STOP. With an idle threshold of ~6–10 µs, **request and reply end up in the same burst**, so the decoder must extract **several messages per burst**.
+- **Polarity with the current wiring:**
+  - SYNC = 4 half-bits **high** followed by 4 **low**.
+  - Data bit = **level of the first half-bit** (high = 1).
+  - If A and B are swapped, the whole signal comes out inverted. The decoder must also try the inverted SYNC pattern and, if it finds it, invert the levels.
 
-## 4. Algoritmo de decodificación
+## 4. Decoding algorithm
 
-La referencia funcionando está en `auxdec.py`, en esta misma carpeta. Corre sobre capturas `.sr` de sigrok y es la fuente de verdad. Los pasos:
+The working reference is `auxdec.py`, in this same folder. It runs on sigrok `.sr` captures and is the source of truth. The steps:
 
-1. **Capturar** una ráfaga como una lista de corridas `(nivel, duración_ns)`.
-2. **Cuantizar** cada corrida a medios bits: `u = round(dur_ns / 500)`, acotado a 1..8. En la práctica:
+1. **Capture** a burst as a list of runs `(level, duration_ns)`.
+2. **Quantize** each run to half-bits: `u = round(dur_ns / 500)`, clamped to 1..8. In practice:
    - `<750 ns` → 1
    - `750–1500 ns` → 2
    - `1500–2750 ns` → 4–5
-   - más largo → 6–8 (STOP + SYNC pegados).
-3. **Expandir** a un arreglo de medios bits (`nivel` repetido `u` veces).
-4. **Buscar el SYNC:** el patrón `1111 0000` precedido por al menos 8 medios bits de preámbulo (o `0000 1111` si la polaridad está invertida; en ese caso, invertir todo).
-5. **Leer los datos:** después del SYNC, tomar pares de medios bits `(a, b)`.
-   - Si `a != b`, el bit vale `a`.
-   - Si `a == b`, se terminaron los datos (es el STOP).
-6. **Armar los bytes:** agrupar de a 8 bits, MSB primero, y descartar el resto si los bits no son múltiplo de 8.
-7. **Seguir buscando** otro SYNC en lo que queda de la ráfaga (la respuesta).
+   - longer → 6–8 (STOP + SYNC back to back).
+3. **Expand** into an array of half-bits (`level` repeated `u` times).
+4. **Find the SYNC:** the pattern `1111 0000` preceded by at least 8 preamble half-bits (or `0000 1111` if the polarity is inverted; in that case, invert everything).
+5. **Read the data:** after the SYNC, take pairs of half-bits `(a, b)`.
+   - If `a != b`, the bit is `a`.
+   - If `a == b`, the data is over (it's the STOP).
+6. **Assemble the bytes:** group 8 bits at a time, MSB first, and drop the remainder if the bit count isn't a multiple of 8.
+7. **Keep searching** for another SYNC in the rest of the burst (the reply).
 
-**Formato de un pedido (fuente → panel):**
+**Request format (source → panel):**
 
 ```
 byte0 = CMD[3:0] << 4 | ADDR[19:16]
 byte1 = ADDR[15:8]
 byte2 = ADDR[7:0]
 byte3 = LEN - 1
-byte4.. = datos (solo en escrituras)
+byte4.. = data (writes only)
 CMD: 1000 = native write, 1001 = native read, 0xxx = I2C-over-AUX
 ```
 
-**La trama a detectar es exactamente esta, de 5 bytes:**
+**The frame to detect is exactly this one, 5 bytes long:**
 
 ```
 80 06 00 00 XX     → native write, addr 0x00600, len 1, data XX
 ```
 
 - `XX = 01` → backlight ON.
-- `XX = 02` o `05` → backlight OFF.
+- `XX = 02` or `05` → backlight OFF.
 
-Cualquier otra cosa se ignora. Una respuesta nunca tiene 5 bytes que empiecen con `80 06 00 00`: la respuesta a una escritura es un solo byte `00` (ACK). Por eso basta con exigir los 5 bytes exactos.
+Anything else is ignored. A reply never has 5 bytes starting with `80 06 00 00`: the reply to a write is a single `00` byte (ACK). So requiring exactly those 5 bytes is enough.
 
-## 5. Requisitos del firmware
+## 5. Firmware requirements
 
-- **Framework:** Arduino-ESP32 **core 3.x** (ESP-IDF 5.x), usando directamente `driver/rmt_rx.h`, que es el driver RMT nuevo.
-- **Captura con RMT RX:**
-  - **Resolución:** 10–20 MHz (50–100 ns por tick).
-  - **`signal_range_min_ns`:** ~100–150 ns (filtro de glitches; el máximo del hardware ronda los 3 µs).
-  - **`signal_range_max_ns`:** ~10 000 ns (fin de ráfaga tras 10 µs sin flancos).
-  - **Buffer:** al menos **256 símbolos**. Una ráfaga de escritura más respuesta tiene unas 195 corridas, unos 100 símbolos RMT. Las lecturas de EDID son más largas: si desbordan, se descartan sin problema.
-  - **Memoria RMT:** en el ESP32 clásico cada canal tiene 64 símbolos por bloque, así que hay que asignar varios bloques (`mem_block_symbols`). En el S3 se puede usar DMA.
-  - **Rearmado:** volver a llamar a `rmt_receive()` **enseguida**. Usar doble buffer y pasar la ráfaga por una cola (`xQueueSendFromISR` desde el callback `on_recv_done`) a una tarea que decodifica. Entre ráfagas hay ≥400 µs, que sobran para rearmar.
-- **Lógica:**
-  - **Al arrancar:** backlight encendido lo antes posible. En modo directo (el montado), `GPIO_BL` en open-drain, suelto y sin pulls internos. En modo MOSFET, `GPIO_BL` en LOW.
-  - **Al detectar `80 06 00 00 02` o `05`:** backlight OFF. En modo directo, `GPIO_BL` en LOW; en modo MOSFET, en HIGH.
-  - **Al detectar `80 06 00 00 01`:** backlight ON. En modo directo, `GPIO_BL` suelto; en modo MOSFET, en LOW.
-  - No hace falta antirrebote: cada evento es una escritura única.
-- **Depuración por Serial (115200):** en modo debug, imprimir cada pedido decodificado (dirección, comando, datos), nunca desde la ISR o el callback. Indicar el cambio de estado con el LED de la placa.
-- **Watchdog** habilitado. Si algo falla, el reset suelta el pin y el backlight queda encendido: por la pull-up externa de 10 kΩ en modo directo, o por el pulldown del gate en modo MOSFET.
+- **Framework:** Arduino-ESP32 **core 3.x** (ESP-IDF 5.x), using `driver/rmt_rx.h` directly, which is the new RMT driver.
+- **RMT RX capture:**
+  - **Resolution:** 10–20 MHz (50–100 ns per tick).
+  - **`signal_range_min_ns`:** ~100–150 ns (glitch filter; the hardware maximum is around 3 µs).
+  - **`signal_range_max_ns`:** ~10 000 ns (end of burst after 10 µs without edges).
+  - **Buffer:** at least **256 symbols**. A write-plus-reply burst has about 195 runs, about 100 RMT symbols. EDID reads are longer: if they overflow, they're dropped without harm.
+  - **RMT memory:** on the classic ESP32 each channel has 64 symbols per block, so several blocks must be allocated (`mem_block_symbols`). On the S3, DMA can be used.
+  - **Re-arming:** call `rmt_receive()` again **right away**. Use double buffering and pass the burst through a queue (`xQueueSendFromISR` from the `on_recv_done` callback) to a task that decodes it. There are ≥400 µs between bursts, more than enough to re-arm.
+- **Logic:**
+  - **At boot:** backlight on as early as possible. In direct mode (the one installed), `GPIO_BL` open-drain, released and with no internal pulls. In MOSFET mode, `GPIO_BL` LOW.
+  - **On detecting `80 06 00 00 02` or `05`:** backlight OFF. In direct mode, `GPIO_BL` LOW; in MOSFET mode, HIGH.
+  - **On detecting `80 06 00 00 01`:** backlight ON. In direct mode, `GPIO_BL` released; in MOSFET mode, LOW.
+  - No debouncing needed: each event is a single write.
+- **Serial debugging (115200):** in debug mode, print every decoded request (address, command, data), never from the ISR or the callback. Show the state change with the board's LED.
+- **Watchdog** enabled. If something fails, the reset releases the pin and the backlight stays on: thanks to the external 10 kΩ pull-up in direct mode, or to the gate pull-down in MOSFET mode.
 
-## 6. Secuencias reales observadas (macOS, Mac mini y MacBook)
+## 6. Real sequences observed (macOS, Mac mini and MacBook)
 
-**Reposo de pantalla** (`pmset displaysleepnow`). macOS espera **~10 s con la pantalla negra** antes de mandar el D3:
+**Display sleep** (`pmset displaysleepnow`). macOS waits **~10 s with the screen black** before sending D3:
 
 ```
- 3,00 s   (pantalla negra)
-13,10 s   Native WRITE 0x00600 data=02        ← apagar backlight
-35,04 s   Native READ  0x00600 len=1          ← al despertar
-35,04 s   Native WRITE 0x00600 data=01        ← prender backlight
-35,05 s   link training: WRITE 0x107=00, 0x100=0a, 0x101=82, 0x102=21/22/00, READ 0x202...
-35,12 s   READ 0x6921D, 0x68028 (registros propios de Apple), WRITE 0x20F=07, 0x2011=07
+ 3.00 s   (screen black)
+13.10 s   Native WRITE 0x00600 data=02        ← backlight off
+35.04 s   Native READ  0x00600 len=1          ← on wake
+35.04 s   Native WRITE 0x00600 data=01        ← backlight on
+35.05 s   link training: WRITE 0x107=00, 0x100=0a, 0x101=82, 0x102=21/22/00, READ 0x202...
+35.12 s   READ 0x6921D, 0x68028 (Apple-specific registers), WRITE 0x20F=07, 0x2011=07
 ```
 
-**Suspensión del sistema:** `WRITE 0x00600 data=02` en el momento de dormirse, y después silencio total.
+**System sleep:** `WRITE 0x00600 data=02` at the moment it goes to sleep, then total silence.
 
-**Conexión del cable / despertar del sistema:** lectura de capacidades DPCD (`0x000` len 16, `0x400`, `0x500`...), lectura del EDID por I2C-over-AUX (`@0x50`, 8 × 16 bytes), sondeo de `@0x52` (NACK), `WRITE 0x00600 data=01` y link training.
+**Cable connect / system wake:** DPCD capability read (`0x000` len 16, `0x400`, `0x500`...), EDID read over I2C-over-AUX (`@0x50`, 8 × 16 bytes), probe of `@0x52` (NACK), `WRITE 0x00600 data=01` and link training.
 
-**Desconexión del cable:** no genera nada por AUX. En la práctica, si el ESP32 se alimenta del adaptador, se apaga junto con él.
+**Cable disconnect:** generates nothing on AUX. In practice, if the ESP32 is powered from the adapter, it powers down along with it.
 
-## 7. Vectores de prueba
+## 7. Test vectors
 
-El archivo `testvectors_0x600.json` tiene las **corridas reales** (`[nivel, duración_ns]`, capturadas a 8 MHz, así que la resolución es de 125 ns) de tres ráfagas:
+The file `testvectors_0x600.json` holds the **real runs** (`[level, duration_ns]`, captured at 8 MHz, so the resolution is 125 ns) of three bursts:
 
-| t (s) | Bytes del pedido | Significado |
+| t (s) | Request bytes | Meaning |
 |---|---|---|
-| 13,100 | `80 06 00 00 02` | WRITE 0x600 = 02 (pedido + respuesta ACK en la misma ráfaga) |
-| 35,044 | `90 06 00 00` | READ 0x600 (con su respuesta) |
-| 35,044 | `80 06 00 00 01` | WRITE 0x600 = 01 (pedido + respuesta ACK) |
+| 13.100 | `80 06 00 00 02` | WRITE 0x600 = 02 (request + ACK reply in the same burst) |
+| 35.044 | `90 06 00 00` | READ 0x600 (with its reply) |
+| 35.044 | `80 06 00 00 01` | WRITE 0x600 = 01 (request + ACK reply) |
 
-Sirven para probar el decodificador en C sin hardware: convertir las corridas a un arreglo, pasarlas por la función de decodificación y verificar que salgan exactamente esos bytes y la acción correcta.
+They're for testing the decoder in C without hardware: convert the runs into an array, pass them through the decoding function and check that exactly those bytes and the right action come out.
 
-## 8. Ideas para después (fuera de este alcance)
+## 8. Ideas for later (out of scope)
 
-- **Brillo PWM:** cortar la pista del PWM de 2 kHz (sale del pin 5 del MCU de 8 pines que está sobre el jog) y que el ESP32 genere el PWM con LEDC, leyendo la rueda o el PWM original como "brillo pedido".
-- **Control desde la compu:** por WiFi (HTTP o MQTT), o leyendo comandos DDC/CI de brillo (I2C-over-AUX a `@0x37`, VCP 0x10). Lo segundo requiere que alguien conteste el ACK, porque si no macOS no los manda.
+- **PWM brightness:** cut the 2 kHz PWM trace (it comes out of pin 5 of the 8-pin MCU sitting above the jog wheel) and have the ESP32 generate the PWM with LEDC, reading the wheel or the original PWM as the "requested brightness".
+- **Control from the computer:** over WiFi (HTTP or MQTT), or by reading DDC/CI brightness commands (I2C-over-AUX to `@0x37`, VCP 0x10). The latter requires someone to answer with an ACK, otherwise macOS doesn't send them.
