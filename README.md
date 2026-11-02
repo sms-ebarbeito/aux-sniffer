@@ -84,11 +84,16 @@ If the SuperMini doesn't enter download mode, hold **BOOT** (GPIO9), tap
 
 ## Wiring (C3 SuperMini)
 
+**Pin numbering:** every pin number in these docs is a pin of the 40-pin
+connector on the adapter (where the work is done), with the 30-pin panel pin
+in parentheses or after a slash. Mapping: AUX 9–10 → 15–16, VCC 12–13 → 18–21,
+HPD 17 → 27, BL_EN 22 → 32.
+
 ### AUX receiver (same as in the SPEC)
 
 ```
-AUX+ (eDP pin 15) ──1kΩ──||10nF──► A ┐
-AUX- (eDP pin 16) ──1kΩ──||10nF──► B ├ MAX485 at 3.3 V (R7, R5 and R6 removed)
+AUX+ (conn. pin 15 / panel 9)──1kΩ──||10nF──► A ┐
+AUX- (conn. pin 16 / panel 10)──1kΩ──||10nF──► B ├ MAX485 at 3.3 V (R7, R5 and R6 removed)
                 RE, DE ──► GND       │
                 RO ──────────────────┴──► GPIO4 (PIN_AUX_IN)
 MAX485 VCC = 3V3 · common GND
@@ -103,7 +108,7 @@ Installed and tested: the backlight turns off on display sleep and comes back
 on wake.
 
 ```
-                              BL_EN trace
+                              BL_EN trace (conn. pin 32 / panel 22)
  adapter (original) ──────────────╳──────────┬─────────────┬──── panel BL_EN
                                  cut         │             │
                                            10 kΩ         GPIO5 (PIN_BL)
@@ -162,7 +167,7 @@ build-up). Real laptops cut panel VCC after D3; this does the same.
  adapter 3.3 V ──┬── ESP32 / MAX485 / pull-ups
                  │
                  └── FDC606P source (pin 4)
-                          drain (pins 1,2,5,6) ──── panel VCC (eDP pins 12–13)
+                          drain (pins 1,2,5,6) ──── panel VCC (conn. pins 18–21 / panel 12–13)
                           gate  (pin 3) ──┬──── PIN_PANEL_VCC (GPIO10 on the C3)
                                          10 kΩ
                                           │
@@ -170,7 +175,8 @@ build-up). Real laptops cut panel VCC after D3; this does the same.
  (the original VCC trace is cut: adapter side -> source, panel side -> drain)
 ```
 
-- **Switch:** FDC606P, P-channel, SuperSOT-6, reused from a donor board.
+- **Switch:** FDC606P, P-channel MOSFET, SuperSOT-6, package marking **606G**,
+  salvaged from a MacBook logic board 820-2877-B (reference designator Q7930).
   Pinout: **1, 2, 5, 6 = drain; 3 = gate; 4 = source.**
 - **Source** goes to the adapter's 3.3 V (the rail before the cut, the same
   one feeding the ESP32, the MAX485 and the pull-ups). **Drain** goes to panel
@@ -181,8 +187,8 @@ build-up). Real laptops cut panel VCC after D3; this does the same.
   powered. Without it, a floating gate could leave the panel off.
 - **HPD trace cut:** the source-side HPD is pulled up to 3.3 V through 10 kΩ and
   the panel-side HPD is left floating. The source then always sees a display
-  and keeps talking AUX while the panel is unpowered. Which connector pin is
-  HPD (17 or 21) is **to be confirmed** (not yet measured).
+  and keeps talking AUX while the panel is unpowered. HPD is panel pin 17,
+  i.e. pin 27 of the 40-pin connector.
 
 Behavior:
 
@@ -207,6 +213,20 @@ panel repeatedly).
 The SuperMini's blue LED is on GPIO8, active low. **Lit means the ESP32 is
 turning the backlight off.** It blinks 3 times at boot. GPIO8 is a strapping
 pin: it's only used as an output after boot.
+
+## Photos
+
+![Finished build: adapter + ESP32-C3 SuperMini + MAX485](docs/img/build-overview.jpg)
+
+![Adapter board, front](docs/img/board-front.jpg)
+
+![Adapter board, back](docs/img/board-back.jpg)
+
+![Detail: FDC606P panel VCC switch](docs/img/detail-mosfet.jpg)
+
+![Detail: ESP32-C3 SuperMini wiring](docs/img/detail-esp32.jpg)
+
+![Detail: MAX485 AUX tap](docs/img/detail-max485.jpg)
 
 ## What you see on Serial (115200, debug mode)
 
@@ -278,7 +298,16 @@ high-priority task through a queue. That task decodes it and drives the pin.
 
 ## Hardware status
 
-**Tested** with the ESP32-C3 SuperMini and the final wiring (direct mode with
+**Phase 2 (panel VCC cut) verified on hardware, 2026-11-02:** panel VCC is cut
+about 2 s after display sleep and the panel comes back on wake. The long-idle
+flicker test (panel asleep >20 min, the LP156WF6-SPB1 flicker) is still
+pending: whether it fixes the flicker is **to be confirmed**.
+
+**Troubleshooting:** if the panel does not come back on wake (the ESP LED
+stays on, meaning it never saw DPCD 0x600 = 01), check the solder joints
+first. That was the cause on the first build.
+
+**Backlight tested** with the ESP32-C3 SuperMini and the final wiring (direct mode with
 an external 10 kΩ pull-up): the backlight turns off on display sleep and
 comes back on wake.
 

@@ -17,8 +17,8 @@ All of this is **verified with real captures** using a logic analyzer, a Mac min
 ## 2. Hardware (already built and tested)
 
 ```
-AUX+ via (eDP 40p connector pin 15) ──1kΩ──||10nF──► A  ┐
-AUX- via (eDP 40p connector pin 16) ──1kΩ──||10nF──► B  ├ MAX485 module (Arduino) at 3.3 V
+AUX+ via (40-pin connector pin 15 / panel pin 9) ──1kΩ──||10nF──► A  ┐
+AUX- via (40-pin connector pin 16 / panel pin 10) ──1kΩ──||10nF──► B  ├ MAX485 module (Arduino) at 3.3 V
                                                         │  R7 (120Ω), R5 and R6 (bias) REMOVED
                                      RE, DE ──► GND     │  RE and DE to GND = receiver only
                                      RO ─────────────────┴──► ESP32 GPIO_AUX_IN
@@ -177,6 +177,10 @@ They're for testing the decoder in C without hardware: convert the runs into an 
 
 ## 8. Phase 2: panel VCC cut
 
+**Status:** verified on real hardware (2026-11-02): panel VCC is cut ~2 s after
+display sleep and the panel comes back on wake. The long-idle flicker test
+(panel asleep >20 min) is still pending, so the flicker fix is **to be confirmed**.
+
 **Why:** on the LG SPB1 panel, leaving VCC on with no video for ~20 min makes
 two corners flicker for several minutes after wake (probably DC/VCOM charge
 build-up). Real laptops cut panel VCC after D3; this does the same.
@@ -185,7 +189,7 @@ build-up). Real laptops cut panel VCC after D3; this does the same.
  adapter 3.3 V ──┬── ESP32 / MAX485 / pull-ups
                  │
                  └── FDC606P source (pin 4)
-                          drain (pins 1,2,5,6) ──── panel VCC (eDP pins 12–13)
+                          drain (pins 1,2,5,6) ──── panel VCC (connector pins 18–21, panel 12–13)
                           gate  (pin 3) ──┬──── PIN_PANEL_VCC (GPIO10 on the C3)
                                          10 kΩ
                                           │
@@ -193,7 +197,8 @@ build-up). Real laptops cut panel VCC after D3; this does the same.
  (the original VCC trace is cut: adapter side -> source, panel side -> drain)
 ```
 
-- **Switch:** FDC606P, P-channel, SuperSOT-6, reused from a donor board.
+- **Switch:** FDC606P, P-channel MOSFET, SuperSOT-6, package marking **606G**,
+  salvaged from a MacBook logic board 820-2877-B (reference designator Q7930).
   Pinout: **1, 2, 5, 6 = drain; 3 = gate; 4 = source.**
 - **Source** goes to the adapter's 3.3 V (the rail before the cut, the same
   one feeding the ESP32, the MAX485 and the pull-ups). **Drain** goes to panel
@@ -204,8 +209,8 @@ build-up). Real laptops cut panel VCC after D3; this does the same.
   powered. Without it, a floating gate could leave the panel off.
 - **HPD trace cut:** the source-side HPD is pulled up to 3.3 V through 10 kΩ and
   the panel-side HPD is left floating. The source then always sees a display
-  and keeps talking AUX while the panel is unpowered. Which connector pin is
-  HPD (17 or 21) is **to be confirmed** (not yet measured).
+  and keeps talking AUX while the panel is unpowered. HPD is panel pin 17,
+  i.e. pin 27 of the 40-pin connector.
 
 Behavior:
 
