@@ -179,7 +179,12 @@ They're for testing the decoder in C without hardware: convert the runs into an 
 
 **Status:** verified on real hardware (2026-11-02): panel VCC is cut ~2 s after
 display sleep and the panel comes back on wake. The long-idle flicker test
-(panel asleep >20 min) is still pending, so the flicker fix is **to be confirmed**.
+passed: the panel was left asleep for 25 minutes (longer than the ~20 min after
+which the LP156WF6-SPB1 used to flicker) and on wake there was no flicker at
+all. Verified: cutting panel VCC during sleep fixes the corner flicker.
+
+**Observed benefit:** with panel VCC switched like a laptop does, wake is
+instant: press a key and the image is there, like an internal laptop panel.
 
 **Why:** on the LG SPB1 panel, leaving VCC on with no video for ~20 min makes
 two corners flicker for several minutes after wake (probably DC/VCOM charge
