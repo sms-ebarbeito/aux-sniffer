@@ -22,6 +22,7 @@
 
 #include "auxdec.h"
 #include "config.h"
+#include "panelvcc.h"
 
 static_assert(sizeof(rmt_symbol_word_t) == sizeof(uint32_t), "auxdec::runsFromRmt expects 32-bit symbols");
 
@@ -60,6 +61,36 @@ static void blInit() {
 // On esp_restart() (not on a panic: there the chip reset already releases the pin).
 static void blShutdown() { blWrite(false); }
 
+// ---------------------------------------------------------------- panel VCC
+
+static panelvcc::Sequencer g_vcc(PIN_PANEL_VCC >= 0, PANEL_VCC_OFF_DELAY_MS);
+
+// Gate HIGH = panel VCC off. Level first, then direction (no glitch).
+static void vccWrite(bool off) {
+#if PIN_PANEL_VCC >= 0
+  gpio_set_level((gpio_num_t)PIN_PANEL_VCC, off ? 1 : 0);
+#else
+  (void)off;
+#endif
+}
+
+static void vccInit() {
+#if PIN_PANEL_VCC >= 0
+  vccWrite(false);
+  gpio_config_t io = {};
+  io.pin_bit_mask = 1ULL << PIN_PANEL_VCC;
+  io.mode = GPIO_MODE_OUTPUT;
+  io.pull_up_en = GPIO_PULLUP_DISABLE;
+  io.pull_down_en = GPIO_PULLDOWN_DISABLE;
+  io.intr_type = GPIO_INTR_DISABLE;
+  gpio_config(&io);
+  vccWrite(false);
+#endif
+}
+
+// On esp_restart(): leave the panel powered.
+static void vccShutdown() { vccWrite(false); }
+
 static void ledWrite(bool on) {
 #if PIN_LED >= 0
   digitalWrite(PIN_LED, (on ^ LED_ACTIVE_LOW) ? HIGH : LOW);
@@ -69,7 +100,10 @@ static void ledWrite(bool on) {
 }
 
 // As early as possible: initVariant() runs before setup() and before Serial.
-void initVariant() { blInit(); }
+void initVariant() {
+  vccInit();
+  blInit();
+}
 
 // ---------------------------------------------------------------- state
 
@@ -80,9 +114,9 @@ struct Burst {
 };
 
 struct LogItem {
-  enum Kind : uint8_t { Msg, Undecodable, State } kind;
+  enum Kind : uint8_t { Msg, Undecodable, State, Vcc } kind;
   uint8_t index;  // position of the message in the burst (0 = request)
-  bool blOff;     // State: new state
+  bool blOff;     // State: new state; Vcc: true = panel VCC off
   uint16_t nruns;
   int64_t t_us;
   auxdec::Message msg;
@@ -147,7 +181,20 @@ static void logPush(const LogItem& it) {
   if (xQueueSend(g_logQ, &it, 0) != pdTRUE) bump(g_stats.logDropped);
 }
 
+// Applies a VCC state change reported by the sequencer.
+static void vccApply(int64_t t_us) {
+  bool off = g_vcc.vccOff();
+  vccWrite(off);
+  if (!g_debug) return;
+  LogItem it = {};
+  it.kind = LogItem::Vcc;
+  it.blOff = off;
+  it.t_us = t_us;
+  logPush(it);
+}
+
 static void setBacklight(bool off, int64_t t_us) {
+  if (!off && !g_vcc.backlightAllowed()) return;  // never backlight on with VCC off
   blWrite(off);
   ledWrite(off);
   if (off == g_blOff) return;
@@ -165,6 +212,9 @@ static void handleBurst(const Burst& b) {
   static auxdec::Message msgs[auxdec::kMaxMsgs];
 
   bump(g_stats.bursts);
+  // Any burst while VCC is off can only come from the source: power the panel
+  // before anything else, even if the burst turns out to be noise.
+  if (g_vcc.onBurst((uint32_t)(b.t_us / 1000))) vccApply(b.t_us);
   size_t nr = auxdec::runsFromRmt(&b.sym->val, b.nsym, 1000000000UL / RMT_RESOLUTION_HZ, runs,
                                   sizeof(runs) / sizeof(runs[0]));
   if (nr < auxdec::kMinRuns) {
@@ -197,7 +247,13 @@ static void handleBurst(const Burst& b) {
       logPush(it);
     }
     auxdec::Action a = auxdec::classify(msgs[i]);
-    if (a != auxdec::Action::None) setBacklight(a == auxdec::Action::BacklightOff, b.t_us);
+    if (a == auxdec::Action::BacklightOff) {
+      setBacklight(true, b.t_us);
+      g_vcc.onSleep((uint32_t)(b.t_us / 1000));
+    } else if (a == auxdec::Action::BacklightOn) {
+      g_vcc.onWake((uint32_t)(b.t_us / 1000));
+      setBacklight(false, b.t_us);
+    }
   }
 }
 
@@ -205,7 +261,9 @@ static void decodeTask(void*) {
   esp_task_wdt_add(nullptr);
   for (;;) {
     Burst b;
-    if (xQueueReceive(g_burstQ, &b, pdMS_TO_TICKS(1000)) == pdTRUE) handleBurst(b);
+    if (xQueueReceive(g_burstQ, &b, pdMS_TO_TICKS(50)) == pdTRUE) handleBurst(b);
+    int64_t now_us = esp_timer_get_time();
+    if (g_vcc.tick((uint32_t)(now_us / 1000))) vccApply(now_us);
     // If re-arming in the ISR failed, the channel is stopped and the ISR won't
     // run again: no race. g_rxIdx is free by the ring invariant.
     if (g_rxOk && g_rxStopped) {
@@ -230,6 +288,9 @@ static void printItem(const LogItem& it) {
     case LogItem::State:
       Serial.printf(">>> BACKLIGHT %s\n", it.blOff ? "OFF" : "ON");
       break;
+    case LogItem::Vcc:
+      Serial.println(it.blOff ? "panel VCC off" : "panel VCC on (AUX activity)");
+      break;
     case LogItem::Undecodable:
       Serial.printf("?? burst without SYNC (%u runs)\n", it.nruns);
       break;
@@ -245,16 +306,19 @@ static void printItem(const LogItem& it) {
 static void printStats() {
   Serial.printf(
       "stats: bursts=%lu noise=%lu no_sync=%lu truncated=%lu messages=%lu dropped=%lu "
-      "log_lost=%lu rearms=%lu | backlight=%s rmt=%s\n",
+      "log_lost=%lu rearms=%lu | vcc_off=%lu vcc_on=%lu | backlight=%s panel_vcc=%s rmt=%s\n",
       (unsigned long)g_stats.bursts, (unsigned long)g_stats.noise, (unsigned long)g_stats.undecodable,
       (unsigned long)g_stats.truncated, (unsigned long)g_stats.messages, (unsigned long)g_stats.dropped,
-      (unsigned long)g_stats.logDropped, (unsigned long)g_stats.rearmFail, g_blOff ? "OFF" : "ON",
-      g_rxOk ? "ok" : "ERROR");
+      (unsigned long)g_stats.logDropped, (unsigned long)g_stats.rearmFail, (unsigned long)g_vcc.offCount(),
+      (unsigned long)g_vcc.onCount(), g_blOff ? "OFF" : "ON",
+      !g_vcc.enabled() ? "disabled" : g_vcc.vccOff() ? "OFF" : "ON", g_rxOk ? "ok" : "ERROR");
 }
 
 static void printBanner() {
-  Serial.printf("\naux-sniffer | %s | AUX_IN=GPIO%d BL=GPIO%d (%s) LED=GPIO%d\n", BOARD_NAME, PIN_AUX_IN, PIN_BL,
-                BL_MODE == BL_MODE_DIRECT_OD ? "direct open-drain, LOW=OFF" : "MOSFET, HIGH=OFF", PIN_LED);
+  Serial.printf("\naux-sniffer | %s | AUX_IN=GPIO%d BL=GPIO%d (%s) LED=GPIO%d PANEL_VCC=GPIO%d (off after %d ms)\n",
+                BOARD_NAME, PIN_AUX_IN, PIN_BL,
+                BL_MODE == BL_MODE_DIRECT_OD ? "direct open-drain, LOW=OFF" : "MOSFET, HIGH=OFF", PIN_LED,
+                PIN_PANEL_VCC, PANEL_VCC_OFF_DELAY_MS);
   Serial.printf("RMT %lu Hz, mem %d symbols, buffer %d x %d, filter %d ns, end of burst %d ns\n",
                 (unsigned long)RMT_RESOLUTION_HZ, RMT_MEM_SYMBOLS, NUM_RX_BUFS, RX_BUF_SYMBOLS, RMT_MIN_NS,
                 RMT_MAX_NS);
@@ -264,8 +328,10 @@ static void printBanner() {
 // ---------------------------------------------------------------- setup / loop
 
 void setup() {
-  blInit();  // initVariant() already did it; repeating it is harmless
+  vccInit();  // initVariant() already did it; repeating it is harmless
+  blInit();
   esp_register_shutdown_handler(blShutdown);
+  esp_register_shutdown_handler(vccShutdown);
 #if PIN_LED >= 0
   pinMode(PIN_LED, OUTPUT);
   for (int i = 0; i < 3; i++) {  // sign of life

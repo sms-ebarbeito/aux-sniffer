@@ -24,6 +24,16 @@
 #define BL_MODE BL_MODE_DIRECT_OD
 #endif
 
+// ---------------------------------------------------------------- panel VCC
+// Phase 2: P-MOSFET (FDC606P) on the panel's eDP VCC. Gate = PIN_PANEL_VCC with
+// an external 10 kΩ pull-down: LOW = panel powered (also with no ESP, in reset
+// or booting), HIGH = panel VCC off. -1 disables the feature (no GPIO touched).
+// VCC is cut PANEL_VCC_OFF_DELAY_MS after the source writes a sleep value to
+// DPCD 0x600, and restored by the first AUX burst seen while it is off.
+#ifndef PANEL_VCC_OFF_DELAY_MS
+#define PANEL_VCC_OFF_DELAY_MS 2000
+#endif
+
 // ---------------------------------------------------------------- board
 #if CONFIG_IDF_TARGET_ESP32C3
 // ESP32-C3 SuperMini (main board). Avoid 2, 8, 9 (strapping) and 18/19
@@ -34,6 +44,9 @@
 #endif
 #ifndef PIN_BL
 #define PIN_BL 5
+#endif
+#ifndef PIN_PANEL_VCC
+#define PIN_PANEL_VCC 10
 #endif
 #ifndef PIN_LED
 #define PIN_LED 8  // blue LED; strapping pin, only used as an output after boot
@@ -56,6 +69,9 @@
 #ifndef PIN_BL
 #define PIN_BL 5
 #endif
+#ifndef PIN_PANEL_VCC
+#define PIN_PANEL_VCC -1  // not wired yet on the S3; set a free GPIO to enable
+#endif
 #ifndef PIN_LED
 #define PIN_LED -1  // the S3 DevKit LED is RGB (WS2812): not used
 #endif
@@ -73,6 +89,9 @@
 #endif
 #ifndef PIN_BL
 #define PIN_BL 25
+#endif
+#ifndef PIN_PANEL_VCC
+#define PIN_PANEL_VCC -1  // not wired yet on the WROOM; set a free GPIO to enable
 #endif
 #ifndef PIN_LED
 #define PIN_LED 2  // LED on many DevKits; strapping pin, output only after boot
@@ -111,6 +130,11 @@
 #define C3_FORBIDDEN(p) ((p) == 2 || (p) == 8 || (p) == 9 || (p) == 18 || (p) == 19)
 static_assert(!C3_FORBIDDEN(PIN_AUX_IN), "PIN_AUX_IN: strapping or USB GPIO on the C3");
 static_assert(!C3_FORBIDDEN(PIN_BL), "PIN_BL: strapping or USB GPIO on the C3");
+static_assert(!C3_FORBIDDEN(PIN_PANEL_VCC), "PIN_PANEL_VCC: strapping or USB GPIO on the C3");
 #endif
+static_assert(PIN_PANEL_VCC < 0 || PIN_PANEL_VCC != PIN_AUX_IN, "PIN_PANEL_VCC and PIN_AUX_IN must be different");
+static_assert(PIN_PANEL_VCC < 0 || PIN_PANEL_VCC != PIN_BL, "PIN_PANEL_VCC and PIN_BL must be different");
+static_assert(PIN_PANEL_VCC < 0 || PIN_PANEL_VCC != PIN_LED, "PIN_PANEL_VCC and PIN_LED must be different");
+static_assert(PANEL_VCC_OFF_DELAY_MS >= 0, "invalid PANEL_VCC_OFF_DELAY_MS");
 static_assert(PIN_AUX_IN != PIN_BL, "PIN_AUX_IN and PIN_BL must be different");
 static_assert(BL_MODE == BL_MODE_MOSFET || BL_MODE == BL_MODE_DIRECT_OD, "invalid BL_MODE");
