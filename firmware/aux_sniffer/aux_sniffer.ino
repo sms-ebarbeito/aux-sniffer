@@ -194,7 +194,9 @@ static void vccApply(int64_t t_us) {
 }
 
 static void setBacklight(bool off, int64_t t_us) {
-  if (!off && !g_vcc.backlightAllowed()) return;  // never backlight on with VCC off
+  // Never backlight on with VCC off. handleBurst calls g_vcc.onBurst() first,
+  // so a burst carrying D0 has already powered the panel by the time we get here.
+  if (!off && !g_vcc.backlightAllowed()) return;
   blWrite(off);
   ledWrite(off);
   if (off == g_blOff) return;
@@ -261,9 +263,14 @@ static void decodeTask(void*) {
   esp_task_wdt_add(nullptr);
   for (;;) {
     Burst b;
-    if (xQueueReceive(g_burstQ, &b, pdMS_TO_TICKS(50)) == pdTRUE) handleBurst(b);
-    int64_t now_us = esp_timer_get_time();
-    if (g_vcc.tick((uint32_t)(now_us / 1000))) vccApply(now_us);
+    // Short timeout only when the VCC cut needs a timer tick.
+    if (xQueueReceive(g_burstQ, &b, pdMS_TO_TICKS(g_vcc.enabled() ? 50 : 1000)) == pdTRUE) handleBurst(b);
+    // Cut only with the burst queue drained: a queued burst or D0 stamped
+    // before the deadline must be handled first (it cancels or wakes).
+    if (uxQueueMessagesWaiting(g_burstQ) == 0) {
+      int64_t now_us = esp_timer_get_time();
+      if (g_vcc.tick((uint32_t)(now_us / 1000))) vccApply(now_us);
+    }
     // If re-arming in the ISR failed, the channel is stopped and the ISR won't
     // run again: no race. g_rxIdx is free by the ring invariant.
     if (g_rxOk && g_rxStopped) {
