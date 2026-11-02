@@ -11,6 +11,7 @@ firmware/aux_sniffer/
   aux_sniffer.ino   RMT RX, tasks, backlight, Serial
   config.h          the ONLY file to touch: board, pins, backlight mode, RMT
   auxdec.h/.cpp     AUX decoder with no Arduino dependencies
+  panelvcc.h/.cpp   panel VCC cut sequencing (pure, host-tested)
 test/               host test (clang) with the real bursts
 build.sh            builds for c3 / s3 / wroom
 ```
@@ -150,6 +151,56 @@ GPIO5 (PIN_BL) ──100Ω──┬── 2N7002 gate
 
 Useful if the ESP32 has its own power supply, with a common GND. Build it
 with `EXTRA="-DBL_MODE=BL_MODE_MOSFET" ./build.sh`.
+
+### Panel VCC cut (phase 2, `PIN_PANEL_VCC`)
+
+**Why:** on the LG SPB1 panel, leaving VCC on with no video for ~20 min makes
+two corners flicker for several minutes after wake (probably DC/VCOM charge
+build-up). Real laptops cut panel VCC after D3; this does the same.
+
+```
+ adapter 3.3 V ──┬── ESP32 / MAX485 / pull-ups
+                 │
+                 └── FDC606P source (pin 4)
+                          drain (pins 1,2,5,6) ──── panel VCC (eDP pins 12–13)
+                          gate  (pin 3) ──┬──── PIN_PANEL_VCC (GPIO10 on the C3)
+                                         10 kΩ
+                                          │
+                                         GND
+ (the original VCC trace is cut: adapter side -> source, panel side -> drain)
+```
+
+- **Switch:** FDC606P, P-channel, SuperSOT-6, reused from a donor board.
+  Pinout: **1, 2, 5, 6 = drain; 3 = gate; 4 = source.**
+- **Source** goes to the adapter's 3.3 V (the rail before the cut, the same
+  one feeding the ESP32, the MAX485 and the pull-ups). **Drain** goes to panel
+  VCC.
+- **Gate LOW = panel powered; gate HIGH = panel VCC off.**
+- **10 kΩ pull-down on the gate:** with the ESP32 absent, in reset or still
+  booting, the GPIO floats; the pull-down holds the gate LOW so the panel stays
+  powered. Without it, a floating gate could leave the panel off.
+- **HPD trace cut:** the source-side HPD is pulled up to 3.3 V through 10 kΩ and
+  the panel-side HPD is left floating. The source then always sees a display
+  and keeps talking AUX while the panel is unpowered. Which connector pin is
+  HPD (17 or 21) is **to be confirmed** (not yet measured).
+
+Behavior:
+
+1. A write of 02/05 to DPCD 0x600 turns the backlight off (as before). After
+   `PANEL_VCC_OFF_DELAY_MS` (default 2000), `PIN_PANEL_VCC` goes HIGH, unless a
+   D0 (0x600 = 01) arrived in the meantime.
+2. While VCC is off, **any AUX burst** (the unpowered panel can't talk, so it is
+   the source) sets `PIN_PANEL_VCC` LOW immediately. The backlight stays off
+   until the usual 0x600 = 01; it is never turned on while VCC is off.
+3. Each new 02 repeats the cycle.
+
+`PIN_PANEL_VCC = -1` disables the feature (no GPIO touched); that is the
+default on the S3 and WROOM builds. On the C3 it is GPIO10 (not a strapping or
+USB pin). The sequencing logic is in `panelvcc.h/.cpp` (pure, tested in
+`test/test_panelvcc.cpp`). In debug mode Serial prints `panel VCC off` /
+`panel VCC on (AUX activity)`, and `stats` includes `vcc_off` / `vcc_on`
+counters, to see whether macOS polls AUX during sleep (which would wake the
+panel repeatedly).
 
 ### LED
 

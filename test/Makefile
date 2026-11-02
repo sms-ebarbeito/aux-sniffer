@@ -7,8 +7,13 @@ build/test_auxdec: test_auxdec.cpp $(FW)/auxdec.cpp $(FW)/auxdec.h
 	@mkdir -p build
 	$(CXX) $(CXXFLAGS) -I$(FW) -o $@ test_auxdec.cpp $(FW)/auxdec.cpp
 
-test: build/test_auxdec
+build/test_panelvcc: test_panelvcc.cpp $(FW)/panelvcc.cpp $(FW)/panelvcc.h
+	@mkdir -p build
+	$(CXX) $(CXXFLAGS) -I$(FW) -o $@ test_panelvcc.cpp $(FW)/panelvcc.cpp
+
+test: build/test_auxdec build/test_panelvcc
 	./build/test_auxdec ../testvectors_0x600.json
+	./build/test_panelvcc
 
 clean:
 	rm -rf build
