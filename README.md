@@ -1,39 +1,57 @@
 # aux-sniffer
 
-ESP32 firmware that passively listens to the DisplayPort AUX channel and
-turns the panel backlight off or on according to the host's writes to the
-DPCD register `0x600` (SET_POWER). The full specification is in
-[SPEC.md](SPEC.md). The main board is the **ESP32-C3 SuperMini**; ESP32
+ESP32 firmware that passively listens to the DisplayPort AUX channel of a
+USB-C/DP → eDP adapter and follows the host's writes to the DPCD register
+`0x600` (SET_POWER): it turns the panel backlight off or on and, while the
+display sleeps, cuts the panel VCC like a laptop does. The full specification
+is in [SPEC.md](SPEC.md). The main board is the **ESP32-C3 SuperMini**; ESP32
 (WROOM) and ESP32-S3 build too, but are secondary.
 
 ```
 firmware/aux_sniffer/
-  aux_sniffer.ino   RMT RX, tasks, backlight, Serial
+  aux_sniffer.ino   RMT RX, tasks, backlight, panel VCC, Serial
   config.h          the ONLY file to touch: board, pins, backlight mode, RMT
   auxdec.h/.cpp     AUX decoder with no Arduino dependencies
   panelvcc.h/.cpp   panel VCC cut sequencing (pure, host-tested)
-test/               host test (clang) with the real bursts
+test/               host tests (clang) with the real bursts
 build.sh            builds for c3 / s3 / wroom
+docs/schematic/     wiring schematics (SVG, generated)
+tools/schematic/    schematic generator (schemdraw)
 ```
 
-## Decoder test (on the Mac, no hardware)
+## Contents
+
+- [Host tests](#host-tests-no-hardware)
+- [Building](#building) · [Flashing](#flashing)
+- [Wiring (C3 SuperMini)](#wiring-c3-supermini): schematic, AUX receiver,
+  power, backlight, panel VCC and HPD, LED
+- [Photos](#photos)
+- [What you see on Serial](#what-you-see-on-serial-115200-debug-mode)
+- [How a burst fits in the C3 RMT](#how-a-burst-fits-in-the-c3-rmt)
+- [Hardware status](#hardware-status)
+
+## Host tests (no hardware)
 
 ```sh
 make -C test
 ```
 
-Runs the three real bursts from `testvectors_0x600.json` and checks the
-request bytes, the reply (ACK) and the action. It also tests inverted
-polarity, the full RMT-symbol path at 10 and 20 MHz, ±100 ns of jitter, two
-transactions in the same burst, and random noise. On top of that, it **cuts
-each burst at every possible point**, by run and by RMT symbol, and checks
-that a wrong action never comes out and that, once the request is complete,
-the right one always does:
+Builds and runs two host tests with clang (developed on a Mac).
+
+**`test_auxdec`** runs the three real bursts from `testvectors_0x600.json` and
+checks the request bytes, the reply (ACK) and the action. It also tests
+inverted polarity, the full RMT-symbol path at 10 and 20 MHz, ±100 ns of
+jitter, two transactions in the same burst, and random noise. On top of that,
+it **cuts each burst at every possible point**, by run and by RMT symbol, and
+checks that a wrong action never comes out and that, once the request is
+complete, the right one always does:
 
 ```
 t=13.100240s 80 06 00 00 02    correct action from 139/193 runs,  70/97 RMT symbols
 t=35.044497s 80 06 00 00 01    correct action from 140/195 runs,  70/98 RMT symbols
 ```
+
+**`test_panelvcc`** tests the panel VCC cut sequencing in `panelvcc.h/.cpp`.
 
 ## Building
 
@@ -54,8 +72,8 @@ On the SuperMini, **`CDCOnBoot=cdc` is required**: the board has no
 USB-serial chip and Serial goes out over native USB (GPIO18/19). The binary
 ends up in `build/<board>/`.
 
-To change the configuration without editing `config.h`, for example to use
-MOSFET mode:
+To change the configuration without editing `config.h`, pass `-D` flags in
+`EXTRA`. For example, to use MOSFET mode:
 
 ```sh
 EXTRA="-DBL_MODE=BL_MODE_MOSFET" ./build.sh
@@ -86,21 +104,66 @@ If the SuperMini doesn't enter download mode, hold **BOOT** (GPIO9), tap
 
 **Pin numbering:** every pin number in these docs is a pin of the 40-pin
 connector on the adapter (where the work is done), with the 30-pin panel pin
-in parentheses or after a slash. Mapping: AUX 9–10 → 15–16, VCC 12–13 → 18–21,
-HPD 17 → 27, BL_EN 22 → 32.
+in parentheses, e.g. **pin 32 (panel 22)**. Mapping:
+
+| Signal | 40-pin connector | Panel |
+|---|---|---|
+| AUX+ / AUX− | 15 / 16 | 9 / 10 |
+| VCC | 18–21 | 12–13 |
+| HPD | 27 | 17 |
+| BL_EN | 32 | 22 |
+
+| SuperMini pin | Firmware (`config.h`) | Goes to |
+|---|---|---|
+| GPIO4 | `PIN_AUX_IN` | MAX485 RO |
+| GPIO5 | `PIN_BL` | BL_EN, pin 32 (panel 22), panel side of the cut |
+| GPIO10 | `PIN_PANEL_VCC` | FDC606P gate |
+| GPIO8 | `PIN_LED` | onboard blue LED (nothing to wire) |
+| 3V3 | | adapter 3.3 V |
+| GND | | adapter GND |
+| 5V | | not connected |
+
+### Schematic
+
+The complete installed circuit. Generated from
+[`tools/schematic/schematic.py`](tools/schematic/schematic.py); see
+[Regenerating the schematics](#regenerating-the-schematics).
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/schematic/schematic-dark.svg">
+  <img alt="aux-sniffer schematic: adapter, 40-pin connector, MAX485 AUX tap, ESP32-C3 SuperMini, BL_EN pull-up, FDC606P panel VCC switch and HPD pull-up" src="docs/schematic/schematic-light.svg">
+</picture>
+
+The sections below explain each part.
 
 ### AUX receiver (same as in the SPEC)
 
 ```
-AUX+ (conn. pin 15 / panel 9)──1kΩ──||10nF──► A ┐
-AUX- (conn. pin 16 / panel 10)──1kΩ──||10nF──► B ├ MAX485 at 3.3 V (R7, R5 and R6 removed)
-                RE, DE ──► GND       │
-                RO ──────────────────┴──► GPIO4 (PIN_AUX_IN)
-MAX485 VCC = 3V3 · common GND
+AUX+ (pin 15 / panel 9)  ──1kΩ──||10nF──► A ┐
+AUX- (pin 16 / panel 10) ──1kΩ──||10nF──► B ├ MAX485 at 3.3 V (R7, R5 and R6 removed)
+                RE, DE ──► GND              │
+                RO ─────────────────────────┴──► GPIO4 (PIN_AUX_IN)
+MAX485 VCC = adapter 3.3 V · common GND
 ```
 
-If A and B end up swapped, nothing breaks: the decoder detects the polarity
-on every burst.
+- R7 (120 Ω termination) and R5/R6 (bias) are removed from the module. RE and
+  DE go to GND: receiver only, the driver is never enabled.
+- RO is a 0 / 3.3 V digital signal and goes straight to the GPIO.
+- If A and B end up swapped, nothing breaks: the decoder detects the polarity
+  on every burst.
+
+### Power
+
+```
+adapter 3.3 V ──► SuperMini 3V3 pin (regulator bypassed), MAX485 VCC, all pull-ups
+adapter GND ────► SuperMini GND, MAX485 GND
+```
+
+**The ESP32 must be powered from the same 3.3 V as the pull-ups.** If the
+ESP32 lost power while the adapter stayed on (for example, with the 3V3 wire
+disconnected), the GPIO protection diode would pull BL_EN down to about 0.6 V
+through the 10 kΩ and the backlight would turn off. With a single rail, both
+power up and down together. The SuperMini's 5V pin is left unconnected.
 
 ### Backlight: final wiring (direct mode, `BL_MODE_DIRECT_OD`, the default)
 
@@ -108,16 +171,13 @@ Installed and tested: the backlight turns off on display sleep and comes back
 on wake.
 
 ```
-                              BL_EN trace (conn. pin 32 / panel 22)
+                              BL_EN trace (pin 32 / panel 22)
  adapter (original) ──────────────╳──────────┬─────────────┬──── panel BL_EN
                                  cut         │             │
                                            10 kΩ         GPIO5 (PIN_BL)
                                   (external, panel side)   open-drain, no pulls
                                              │
                                      adapter 3.3 V
-
-adapter 3.3 V ──► SuperMini 3V3 and MAX485 VCC
-adapter GND ────► GND
 ```
 
 - **The BL_EN trace is cut.** The adapter no longer drives BL_EN: it is set
@@ -135,13 +195,15 @@ adapter GND ────► GND
   why the firmware configures the pin **with no internal pulls**, in
   `initVariant()`, before `setup()`. On a watchdog, a panic or an
   `esp_restart()`, the pin is released again.
-- **The ESP32 must be powered from the same 3.3 V as the pull-up.** If the
-  ESP32 lost power while the adapter stayed on (for example, with the 3V3
-  wire disconnected), the GPIO protection diode would pull BL_EN down to about
-  0.6 V through the 10 kΩ and the backlight would turn off. The SuperMini is
-  powered through its **3V3** pin, bypassing its regulator.
+- This only works with the ESP32 on the same 3.3 V rail as the pull-up (see
+  [Power](#power)).
 
 ### Backlight: MOSFET alternative (`BL_MODE_MOSFET`, not installed)
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/schematic/backlight-mosfet-dark.svg">
+  <img alt="MOSFET alternative: GPIO5 through 100 Ω to a 2N7002 gate with a 100 kΩ pull-down; drain to BL_EN" src="docs/schematic/backlight-mosfet-light.svg">
+</picture>
 
 ```
 GPIO5 (PIN_BL) ──100Ω──┬── 2N7002 gate
@@ -157,17 +219,18 @@ GPIO5 (PIN_BL) ──100Ω──┬── 2N7002 gate
 Useful if the ESP32 has its own power supply, with a common GND. Build it
 with `EXTRA="-DBL_MODE=BL_MODE_MOSFET" ./build.sh`.
 
-### Panel VCC cut (phase 2, `PIN_PANEL_VCC`)
+### Panel VCC cut and HPD (phase 2, `PIN_PANEL_VCC`)
 
-**Why:** on the LG SPB1 panel, leaving VCC on with no video for ~20 min makes
-two corners flicker for several minutes after wake (probably DC/VCOM charge
-build-up). Real laptops cut panel VCC after D3; this does the same.
+**Why:** on the LG LP156WF6-SPB1 panel, leaving VCC on with no video for
+~20 min makes two corners flicker for several minutes after wake (probably
+DC/VCOM charge build-up). Real laptops cut panel VCC after D3; this does the
+same.
 
 ```
  adapter 3.3 V ──┬── ESP32 / MAX485 / pull-ups
                  │
                  └── FDC606P source (pin 4)
-                          drain (pins 1,2,5,6) ──── panel VCC (conn. pins 18–21 / panel 12–13)
+                          drain (pins 1,2,5,6) ──── panel VCC (pins 18–21 / panel 12–13)
                           gate  (pin 3) ──┬──── PIN_PANEL_VCC (GPIO10 on the C3)
                                          10 kΩ
                                           │
@@ -185,10 +248,10 @@ build-up). Real laptops cut panel VCC after D3; this does the same.
 - **10 kΩ pull-down on the gate:** with the ESP32 absent, in reset or still
   booting, the GPIO floats; the pull-down holds the gate LOW so the panel stays
   powered. Without it, a floating gate could leave the panel off.
-- **HPD trace cut:** the source-side HPD is pulled up to 3.3 V through 10 kΩ and
-  the panel-side HPD is left floating. The source then always sees a display
-  and keeps talking AUX while the panel is unpowered. HPD is panel pin 17,
-  i.e. pin 27 of the 40-pin connector.
+- **HPD trace cut:** HPD is pin 27 (panel 17). The source-side HPD is pulled
+  up to 3.3 V through 10 kΩ and the panel-side HPD is left floating. The
+  source then always sees a display and keeps talking AUX while the panel is
+  unpowered.
 
 Behavior:
 
@@ -214,6 +277,16 @@ The SuperMini's blue LED is on GPIO8, active low. **Lit means the ESP32 is
 turning the backlight off.** It blinks 3 times at boot. GPIO8 is a strapping
 pin: it's only used as an output after boot.
 
+### Regenerating the schematics
+
+```sh
+python3 -m pip install -r tools/schematic/requirements.txt
+python3 tools/schematic/schematic.py
+```
+
+This rewrites the light and dark SVGs in `docs/schematic/`. Pin numbers and
+values in the script must match `config.h` and this README.
+
 ## Photos
 
 ![Finished build: adapter + ESP32-C3 SuperMini + MAX485](docs/img/build-overview.jpg)
@@ -234,16 +307,18 @@ Debug output is on by default (`AUX_DEBUG 1` in `config.h`). Console
 commands: **`d`** toggles debug, **`s`** prints statistics and **`h`** repeats
 the header.
 
-Example built from the sequences in SPEC §6 (not yet a real capture from the
-ESP32):
+Example built from the sequences in SPEC §6 and the firmware's print formats
+(not a real capture from the ESP32):
 
 ```
-aux-sniffer | ESP32-C3 SuperMini | AUX_IN=GPIO4 BL=GPIO5 (direct open-drain, LOW=OFF) LED=GPIO8
+aux-sniffer | ESP32-C3 SuperMini | AUX_IN=GPIO4 BL=GPIO5 (direct open-drain, LOW=OFF) LED=GPIO8 PANEL_VCC=GPIO10 (off after 2000 ms)
 RMT 10000000 Hz, mem 96 symbols, buffer 4 x 512, filter 150 ns, end of burst 10000 ns
 debug=on  (keys: d=debug on/off, s=stats, h=help)
 [     13.100] REQ  Native WRITE 0x00600 len=1 data=02
 [     13.100]      REPLY ACK
 [     13.100] >>> BACKLIGHT OFF
+[     15.100] panel VCC off
+[     35.043] panel VCC on (AUX activity)
 [     35.043] REQ  Native READ  0x00600 len=1
 [     35.043]      REPLY ACK data=02
 [     35.044] REQ  Native WRITE 0x00600 len=1 data=01
@@ -251,7 +326,7 @@ debug=on  (keys: d=debug on/off, s=stats, h=help)
 [     35.044] >>> BACKLIGHT ON
 [     35.050] REQ  Native WRITE 0x00100 len=1 data=0a
 ...
-stats: bursts=412 noise=0 no_sync=0 truncated=0 messages=824 dropped=0 log_lost=0 rearms=0 | backlight=ON rmt=ok
+stats: bursts=412 noise=0 no_sync=0 truncated=0 messages=824 dropped=0 log_lost=0 rearms=0 | vcc_off=1 vcc_on=1 | backlight=ON panel_vcc=ON rmt=ok
 ```
 
 - **Time:** seconds since boot.
@@ -265,6 +340,7 @@ stats: bursts=412 noise=0 no_sync=0 truncated=0 messages=824 dropped=0 log_lost=
   - `dropped`: bursts lost because the queue was full.
   - `log_lost`: debug lines that weren't printed. Never affects the action.
   - `rearms`: times the RMT had to be restarted.
+  - `vcc_off` / `vcc_on`: times panel VCC was cut / restored.
 
 Serial output is printed from `loop()`, which runs at low priority, through a
 queue. If the port is slow or nobody is reading it, log lines are lost, but
@@ -298,19 +374,18 @@ high-priority task through a queue. That task decodes it and drives the pin.
 
 ## Hardware status
 
+**Backlight tested** with the ESP32-C3 SuperMini and the final wiring (direct
+mode with an external 10 kΩ pull-up): the backlight turns off on display sleep
+and comes back on wake.
+
 **Phase 2 (panel VCC cut) verified on hardware, 2026-11-02:** panel VCC is cut
 about 2 s after display sleep and the panel comes back on wake. The long-idle
 flicker test passed: the panel was left asleep for 25 minutes (longer than the
 ~20 min after which the LP156WF6-SPB1 used to flicker) and on wake there was no
-flicker at all. Verified: cutting panel VCC during sleep fixes the corner
-flicker.
+flicker at all. Cutting panel VCC during sleep fixes the corner flicker.
 
 **Observed benefit:** with panel VCC switched like a laptop does, wake is
 instant: press a key and the image is there, like an internal laptop panel.
-
-**Backlight tested** with the ESP32-C3 SuperMini and the final wiring (direct mode with
-an external 10 kΩ pull-up): the backlight turns off on display sleep and
-comes back on wake.
 
 **Not verified yet:**
 
